@@ -14,7 +14,7 @@ use crate::sfu::lifecycle;
 use crate::state::AppState;
 use crate::webhook as webhook_client;
 
-fn is_unique_violation(err: &sqlx::Error) -> bool {
+pub(crate) fn is_unique_violation(err: &sqlx::Error) -> bool {
     matches!(err, sqlx::Error::Database(db_err) if db_err.is_unique_violation())
 }
 
@@ -277,7 +277,7 @@ async fn list_streams(
     Ok(Json(out))
 }
 
-fn validate_slug(id: &str) -> AppResult<()> {
+pub(crate) fn validate_slug(id: &str) -> AppResult<()> {
     let ok = !id.is_empty()
         && id.len() <= 64
         && id

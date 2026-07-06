@@ -94,6 +94,17 @@ function wireCard(root, stream) {
     }
   });
 
+  root.querySelector('.js-delete-btn').addEventListener('click', async () => {
+    if (!window.confirm('この配信を削除します。よろしいですか?(元に戻せません)')) return;
+    try {
+      await api(`/api/my/streams/${encodeURIComponent(stream.id)}`, { method: 'DELETE' });
+      showToast('配信を削除しました');
+      await load();
+    } catch (e) {
+      showToast(e.message);
+    }
+  });
+
   root.querySelector('.js-edit-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const title = root.querySelector('.js-title-input').value;
@@ -136,6 +147,32 @@ async function load() {
   }
   renderAll();
 }
+
+function closeStreamForm() {
+  document.getElementById('stream-form-card').hidden = true;
+  document.getElementById('stream-form').reset();
+}
+
+document.getElementById('stream-new-btn').addEventListener('click', () => {
+  document.getElementById('stream-form-card').hidden = false;
+});
+document.getElementById('stream-cancel-btn').addEventListener('click', closeStreamForm);
+
+document.getElementById('stream-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const id = document.getElementById('stream-id').value;
+  const title = document.getElementById('stream-title').value;
+  const description = document.getElementById('stream-desc').value;
+  const isPublic = document.getElementById('stream-public').checked;
+  try {
+    await api('/api/my/streams', { method: 'POST', body: { id, title, description, public: isPublic } });
+    closeStreamForm();
+    await load();
+    showToast('配信を作成しました');
+  } catch (e) {
+    showToast(e.message);
+  }
+});
 
 async function guardLoggedIn() {
   const user = await fetchMe();

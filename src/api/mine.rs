@@ -1,11 +1,13 @@
 //! 配信者自身のセルフサービスAPI(自分の配信のみ操作可能。管理者は誰の配信でも操作可能)。
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::api::admin::{is_unique_violation, validate_slug};
 use crate::auth::CurrentUser;
 use crate::error::{AppError, AppResult};
 use crate::models::{generate_stream_key, Stream};
@@ -80,6 +82,58 @@ async fn list_mine(
 }
 
 #[derive(Debug, Deserialize)]
+struct CreateMyStream {
+    id: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    public: bool,
+}
+
+/// `POST /api/my/streams` — 自分が所有する配信を新規作成する。
+async fn create_mine(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Json(body): Json<CreateMyStream>,
+) -> AppResult<(StatusCode, Json<MyStream>)> {
+    validate_slug(&body.id)?;
+    if body.title.trim().is_empty() {
+        return Err(AppError::bad_request("タイトルは空にできません"));
+    }
+
+    let stream_key = generate_stream_key();
+    let now = OffsetDateTime::now_utc();
+    let result = sqlx::query(
+        "INSERT INTO streams \
+         (id, owner_user_id, title, description, stream_key, is_live, public, peak_viewers, created_at) \
+         VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?)",
+    )
+    .bind(&body.id)
+    .bind(user.id)
+    .bind(&body.title)
+    .bind(&body.description)
+    .bind(&stream_key)
+    .bind(body.public)
+    .bind(now)
+    .execute(&state.db)
+    .await;
+
+    if let Err(e) = &result {
+        if is_unique_violation(e) {
+            return Err(AppError::conflict("その配信IDは既に使用されています"));
+        }
+    }
+    result?;
+
+    let created = sqlx::query_as::<_, Stream>("SELECT * FROM streams WHERE id = ?")
+        .bind(&body.id)
+        .fetch_one(&state.db)
+        .await?;
+    Ok((StatusCode::CREATED, Json(to_my_stream(&state, created).await)))
+}
+
+#[derive(Debug, Deserialize)]
 struct UpdateMyStream {
     title: Option<String>,
     description: Option<String>,
@@ -116,6 +170,21 @@ async fn update_mine(
         .fetch_one(&state.db)
         .await?;
     Ok(Json(to_my_stream(&state, updated).await))
+}
+
+/// `DELETE /api/my/streams/{id}` — 自分が所有する配信を削除する。配信中なら先に停止する。
+async fn delete_mine(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(stream_id): Path<String>,
+) -> AppResult<StatusCode> {
+    fetch_owned(&state, &user, &stream_id).await?;
+    lifecycle::stop_stream(&state, &stream_id, true).await?;
+    sqlx::query("DELETE FROM streams WHERE id = ?")
+        .bind(&stream_id)
+        .execute(&state.db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/my/streams/{id}/regenerate-key` — stream_keyの再発行(漏洩時などに使用)。
@@ -162,8 +231,8 @@ async fn stop_mine(
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/streams", get(list_mine))
-        .route("/streams/{id}", patch(update_mine))
+        .route("/streams", get(list_mine).post(create_mine))
+        .route("/streams/{id}", patch(update_mine).delete(delete_mine))
         .route("/streams/{id}/regenerate-key", post(regenerate_key))
         .route("/streams/{id}/stop", post(stop_mine))
 }
