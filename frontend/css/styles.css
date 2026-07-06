@@ -38,6 +38,14 @@
   box-sizing: border-box;
 }
 
+/* display:flex等を指定するクラスと併用しても hidden 属性(JSでの要素の
+   表示/非表示切り替えに多用)が確実に効くようにする。同じ詳細度の場合
+   author CSSがUAスタイルシートの[hidden]{display:none}より優先されて
+   しまうため、明示的に上書きしておく必要がある。 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
