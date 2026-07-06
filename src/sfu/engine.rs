@@ -67,51 +67,26 @@ fn video_rtcp_feedback() -> Vec<RTCPFeedback> {
     ]
 }
 
-/// H.264はfmtpの完全一致でネゴシエーションされるため、送信側(OBSやブラウザ)が
-/// どのプロファイルをオファーしてもなるべく一致するよう、複数の代表的なバリアントを
-/// 異なるペイロードタイプで登録しておく。
-fn register_h264_variants(m: &mut MediaEngine) -> Result<()> {
-    let variants: &[(u8, &str)] = &[
-        (
-            102,
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
-        ),
-        (
-            104,
-            "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f",
-        ),
-        (
-            106,
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f",
-        ),
-        (
-            108,
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640c1f",
-        ),
-    ];
-
-    for (payload_type, fmtp) in variants {
-        m.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: MIME_TYPE_H264.to_owned(),
-                    clock_rate: 90000,
-                    channels: 0,
-                    sdp_fmtp_line: (*fmtp).to_owned(),
-                    rtcp_feedback: video_rtcp_feedback(),
-                },
-                payload_type: *payload_type,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        )?;
-    }
-    Ok(())
-}
-
 fn build_media_engine() -> Result<MediaEngine> {
     let mut m = MediaEngine::default();
-    register_h264_variants(&mut m).context("H.264コーデックの登録に失敗しました")?;
+    // H.264はfmtpの完全一致でネゴシエーションされ、かつこのSFUはRTPをトランスコード
+    // せずそのまま中継する(TrackLocalStaticRTP)。そのため登録するプロファイルは
+    // 必ず1種類のみにすること。以前はOBS/ブラウザ双方の互換性を広げる意図で
+    // packetization-mode違いなどの複数バリアントを別ペイロードタイプで登録していたが、
+    // WHIP側(OBS)とWHEP側(視聴者)が「たまたま異なるバリアント」を選んでしまうと、
+    // 中継されるRTPペイロードの実体(NALのパケタイズ形式)と視聴側が受け取るSDP上の
+    // fmtp(packetization-mode等)が食い違い、映像がデコードされない不具合が実機で
+    // 発生した。1種類のみ登録すればOBS/視聴者は必ず同じプロファイルに合意するため、
+    // この不整合は構造的に発生しない。
+    m.register_codec(
+        RTCRtpCodecParameters {
+            capability: h264_capability(),
+            payload_type: 102,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    )
+    .context("H.264コーデックの登録に失敗しました")?;
     m.register_codec(
         RTCRtpCodecParameters {
             capability: opus_capability(),
@@ -144,13 +119,19 @@ pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
     // サーバは固定の公開IPを持つため、ブラウザ向けプライバシー機能であるmDNS候補は不要。
     // 無効化してICE candidate gatheringを単純化・高速化する。
     setting_engine.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
-    // 注意: set_network_types(vec![Udp4])のようにアドレスファミリを絞り込むと、
-    // 環境によっては(マルチインターフェース+1:1 NATマッピングの組み合わせで)候補が
-    // 1件も生成されずICE接続不能になる現象を実機検証で確認したため、意図的に
-    // 設定していない。public_ipsに含めなかった側のアドレスファミリの
-    // ローカルインターフェースがある場合、1:1マッピング対象が見つからない旨の
-    // 警告ログが出るが、そのアドレスはマッピングなしでそのまま候補として
-    // 使われるため実際の接続性には影響しない(無害な警告)。
+    // ローカル候補の収集をpublic_ipsに列挙したアドレスのみに絞る。Docker/Tailscale等の
+    // 仮想インターフェースやIPv6リンクローカルアドレスが多数存在する環境では、それら
+    // 全てに対してエフェメラルポート範囲(数百ポート)を1つずつ総当たりでbindしようと
+    // した結果、本来使うべきアドレスに到達する前にICE gathering自体が中断されてしまい
+    // 接続不能になる現象を実機で確認した。1:1 NATマッピング対象外のアドレスから
+    // 候補を収集しても(公開IPとして広告できないため)どのみち使い物にならないので、
+    // このフィルタで絞ることに副作用はない。
+    // 注意: set_network_types(vec![Udp4])のようにアドレス"ファミリ"単位で絞り込むと、
+    // 環境によっては候補が1件も生成されずICE接続不能になる現象を別途確認したため、
+    // そちらは意図的に使っていない(アドレス単位のset_ip_filterのみを用いる)。
+    let allowed_ips: std::collections::HashSet<std::net::IpAddr> =
+        cfg.public_ips.iter().copied().collect();
+    setting_engine.set_ip_filter(Box::new(move |ip| allowed_ips.contains(&ip)));
 
     let api = APIBuilder::new()
         .with_media_engine(media_engine)

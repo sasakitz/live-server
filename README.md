@@ -41,7 +41,8 @@ OBSでの配信テスト:
 1. OBSの「設定 → 配信」で サービス: `WHIP(カスタム)` を選択
 2. サーバ: ダッシュボード(`/dashboard`)に表示される「サーバ」の値をコピー
    (例: `http://127.0.0.1:8080/api/whip/<stream_key>`)
-3. Bearer Token: 空欄のまま
+3. Bearer Token: 空欄のまま(OBSのバージョンによっては接続できない場合があるので、
+   その際はStream Key(ダッシュボードに表示)を入力する)
 4. エンコーダ: H.264(x264 / NVENC / QuickSync)、音声はOpus
 5. 配信開始 → `/watch/<配信ID>` で視聴
 

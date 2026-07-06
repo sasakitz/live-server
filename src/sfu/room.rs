@@ -79,10 +79,18 @@ impl Room {
 
     /// 配信終了時に全視聴者PeerConnectionを閉じる。
     pub async fn close_all_viewers(&self) {
-        let mut viewers = self.viewers.write().await;
-        for (_, pc) in viewers.drain() {
+        // 書き込みロックを保持したままpc.close().awaitすると、そのclose()がその
+        // 視聴者自身のon_peer_connection_state_changeコールバックを誘発し、
+        // コールバック側のroom.remove_viewer()が同じロックの取得待ちでブロックする
+        // ことでデッドロックする(実機で検出)。ロックはdrainの間だけ保持し、
+        // 実際のclose()はロックを解放した後に行う。
+        let viewers: Vec<_> = {
+            let mut viewers = self.viewers.write().await;
+            viewers.drain().collect()
+        };
+        self.viewer_count.store(0, Ordering::SeqCst);
+        for (_, pc) in viewers {
             let _ = pc.close().await;
         }
-        self.viewer_count.store(0, Ordering::SeqCst);
     }
 }

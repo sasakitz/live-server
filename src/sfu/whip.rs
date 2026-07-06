@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
 use axum::Router;
@@ -23,13 +23,29 @@ use crate::state::AppState;
 
 const SDP_MIME: &str = "application/sdp";
 
+/// `Authorization: Bearer <token>` からstream_keyを取り出す。OBSの実装によっては
+/// Bearer Token欄が空だと接続に失敗する個体があるため、URLパスとBearer Tokenの
+/// どちらでもstream_keyを受け付けられるようにしている(Bearerを優先)。
+fn bearer_stream_key(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = value.strip_prefix("Bearer ")?.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_owned())
+    }
+}
+
 /// `POST /api/whip/{stream_key}` — OBSはこのURLに対しSDP offerをPOSTする。
-/// stream_keyはURLパスに含める(OBSの Bearer Token 欄は空でよい)。
+/// stream_keyはURLパスに含めるのが既定だが、Authorization: Bearerが設定されて
+/// いればそちらを優先する(空欄でも動くはずだが、OBS側の個体差を考慮)。
 async fn publish(
     State(state): State<AppState>,
     Path(stream_key): Path<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<Response> {
+    let stream_key = bearer_stream_key(&headers).unwrap_or(stream_key);
     let offer_sdp =
         String::from_utf8(body.to_vec()).map_err(|_| AppError::bad_request("SDPがUTF-8として不正です"))?;
 
@@ -39,9 +55,28 @@ async fn publish(
         .await?
         .ok_or_else(|| AppError::unauthorized("stream_keyが無効です"))?;
 
-    {
+    let existing_room = {
         let rooms = state.rooms.read().await;
-        if rooms.contains_key(&stream.id) {
+        rooms.get(&stream.id).cloned()
+    };
+    if let Some(existing) = existing_room {
+        // OBSがWHIPのDELETEを送らずに切断した場合、ICEの切断検知には数秒かかることがある。
+        // その間に再配信しようとすると本来は不要な409を返してしまうため、既存の
+        // publisher_pcが既に非アクティブ(Disconnected/Failed/Closed)であれば、
+        // ここで能動的に古いRoomを片付けてから新規配信を受け付ける。
+        let is_stale = match existing.publisher_pc.read().await.as_ref() {
+            Some(pc) => matches!(
+                pc.connection_state(),
+                RTCPeerConnectionState::Disconnected
+                    | RTCPeerConnectionState::Failed
+                    | RTCPeerConnectionState::Closed
+            ),
+            None => true,
+        };
+        if is_stale {
+            tracing::info!(stream_id = %stream.id, "未クリーンアップの旧セッションを検出したため破棄して再配信を受け付けます");
+            lifecycle::stop_stream(&state, &stream.id, true).await?;
+        } else {
             return Err(AppError::conflict("この配信は既に開始されています"));
         }
     }

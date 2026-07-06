@@ -67,23 +67,27 @@ pub async fn mark_stream_started(state: &AppState, stream_id: &str) -> AppResult
 /// 管理APIの強制停止やDELETEなど、コールバック外から能動的に止める場合は
 /// `true` を渡してPeerConnectionを実際に閉じる。
 pub async fn stop_stream(state: &AppState, stream_id: &str, close_publisher_pc: bool) -> AppResult<()> {
+    // publisher切断時、webrtc-rsのPeerConnectionStateがDisconnected→Failed→Closedのように
+    // 短時間に複数回遷移し、on_peer_connection_state_changeが同じ切断に対して複数回
+    // (ほぼ同時に)発火することがある。`state.rooms`からのremoveはロックで保護された
+    // 単一操作なので、複数回呼ばれても`Some(room)`を受け取れるのは必ず1回だけであり、
+    // それ以外の(冗長な)呼び出しはここで即座に抜ける。
     let room = {
         let mut rooms = state.rooms.write().await;
         rooms.remove(stream_id)
     };
-
-    let peak_viewers: i64 = if let Some(room) = &room {
-        if close_publisher_pc {
-            if let Some(pc) = room.publisher_pc.write().await.take() {
-                let _ = pc.close().await;
-            }
-        }
-        room.close_all_viewers().await;
-        room.peak_viewers() as i64
-    } else {
-        0
+    let Some(room) = room else {
+        return Ok(());
     };
 
+    let peak_viewers = room.peak_viewers() as i64;
+
+    // DB確定(is_live=0への更新)を、視聴者/publisher PeerConnectionのclose(実際の
+    // ネットワーク処理を伴い時間がかかりうる)より先に行う。ここを後回しにすると、
+    // このclose処理を待っている間に上記の冗長な呼び出しが先にDBを更新してしまい、
+    // (Roomを取得できなかったため)peak_viewers=0で上書きされた上、こちらの正しい
+    // 更新は`WHERE is_live = 1`に一致せず握りつぶされる、という実機観測済みの
+    // 不具合があった。
     let now = OffsetDateTime::now_utc();
     let result = sqlx::query(
         "UPDATE streams SET is_live = 0, started_at = NULL, peak_viewers = ? \
@@ -93,6 +97,13 @@ pub async fn stop_stream(state: &AppState, stream_id: &str, close_publisher_pc: 
     .bind(stream_id)
     .execute(&state.db)
     .await?;
+
+    if close_publisher_pc {
+        if let Some(pc) = room.publisher_pc.write().await.take() {
+            let _ = pc.close().await;
+        }
+    }
+    room.close_all_viewers().await;
 
     if result.rows_affected() == 0 {
         return Ok(());
