@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>視聴 | live-server</title>
+<title>視聴 | MyuTube</title>
+<link rel="icon" href="/favicon.ico" />
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
 <header class="header">
-  <a href="/" class="header__brand">📡 Live</a>
+  <a href="/" class="header__brand">📡 MyuTube</a>
   <nav class="header__nav" id="nav-links"></nav>
 </header>
 
@@ -16,12 +17,13 @@
   <div class="player-wrap" id="player-wrap">
     <video id="video" autoplay playsinline muted></video>
     <div class="player-overlay" id="overlay">読み込み中...</div>
-  </div>
-
-  <div class="player-controls">
-    <button id="unmute-btn" class="btn btn--secondary btn--sm" type="button" hidden>🔇 ミュート解除</button>
-    <span class="flex-spacer"></span>
-    <span id="viewer-count" class="text-muted"></span>
+    <div class="player-controls">
+      <button id="mute-btn" class="btn btn--secondary btn--sm" type="button" hidden></button>
+      <input type="range" id="volume-slider" class="volume-slider" min="0" max="100" value="100" hidden />
+      <span class="flex-spacer"></span>
+      <span id="viewer-count" class="text-muted"></span>
+      <button id="fullscreen-btn" class="btn btn--secondary btn--sm" type="button" hidden>⛶</button>
+    </div>
   </div>
 
   <div class="section-title">
@@ -47,7 +49,7 @@ function setOverlay(text) {
 }
 
 function renderMeta(meta) {
-  document.title = `${meta.title} | live-server`;
+  document.title = `${meta.title} | MyuTube`;
   document.getElementById('title').textContent = meta.title;
   document.getElementById('description').textContent = meta.description || '';
   document.getElementById('viewer-count').textContent = meta.is_live ? `👁 ${meta.viewer_count}人視聴中` : '';
@@ -101,13 +103,55 @@ async function load() {
   }
 }
 
-document.getElementById('unmute-btn').addEventListener('click', () => {
+const muteBtn = document.getElementById('mute-btn');
+const volumeSlider = document.getElementById('volume-slider');
+
+function updateMuteBtn() {
   const video = document.getElementById('video');
-  video.muted = false;
-  document.getElementById('unmute-btn').hidden = true;
+  muteBtn.textContent = video.muted || video.volume === 0 ? '🔇' : '🔊';
+}
+
+muteBtn.addEventListener('click', () => {
+  const video = document.getElementById('video');
+  video.muted = !video.muted;
+  if (!video.muted && video.volume === 0) {
+    video.volume = 1;
+    volumeSlider.value = 100;
+  }
+  updateMuteBtn();
 });
+
+volumeSlider.addEventListener('input', () => {
+  const video = document.getElementById('video');
+  video.volume = Number(volumeSlider.value) / 100;
+  video.muted = video.volume === 0;
+  updateMuteBtn();
+});
+
 document.getElementById('video').addEventListener('loadedmetadata', () => {
-  document.getElementById('unmute-btn').hidden = false;
+  const video = document.getElementById('video');
+  muteBtn.hidden = false;
+  volumeSlider.hidden = false;
+  volumeSlider.value = Math.round(video.volume * 100);
+  updateMuteBtn();
+  fullscreenBtn.hidden = !(document.fullscreenEnabled || video.webkitEnterFullscreen);
+});
+
+const fullscreenBtn = document.getElementById('fullscreen-btn');
+fullscreenBtn.addEventListener('click', () => {
+  const video = document.getElementById('video');
+  // iOS Safari(iPhone)はvideo以外の要素のFullscreen APIに対応していないため、
+  // video自身のネイティブ全画面再生(webkitEnterFullscreen)にフォールバックする。
+  if (video.webkitEnterFullscreen && !document.fullscreenEnabled) {
+    video.webkitEnterFullscreen();
+    return;
+  }
+  const wrap = document.getElementById('player-wrap');
+  if (!document.fullscreenElement) {
+    wrap.requestFullscreen().catch(() => {});
+  } else {
+    document.exitFullscreen().catch(() => {});
+  }
 });
 
 window.addEventListener('pagehide', () => {

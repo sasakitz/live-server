@@ -369,6 +369,12 @@ tr:last-child td {
   overflow: hidden;
 }
 
+.player-wrap:fullscreen,
+.player-wrap:-webkit-full-screen {
+  aspect-ratio: unset;
+  border-radius: 0;
+}
+
 .player-wrap video {
   width: 100%;
   height: 100%;
@@ -389,13 +395,38 @@ tr:last-child td {
   padding: 16px;
 }
 
+/* 常に映像の上に重ねて表示するため、サイトのライト/ダーク配色設定に関わらず
+   常時暗い背景を前提にした配色で固定する。 */
 .player-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  margin-top: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
   flex-wrap: wrap;
+}
+
+.player-controls .text-muted {
+  color: #cbd5e1;
+}
+
+.player-controls .btn--secondary {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.player-controls .btn--secondary:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.volume-slider {
+  width: 100px;
+  accent-color: var(--color-primary);
 }
 
 /* ---------- ユーティリティ ---------- */
