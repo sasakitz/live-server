@@ -11,6 +11,7 @@ use axum::Router;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_local::TrackLocalWriter;
 
@@ -152,6 +153,32 @@ async fn publish(
         }));
     }
 
+    // set_remote_description以降のSDPネゴシエーションが失敗すると、それ以前に
+    // state.roomsへ登録済みのRoomが誰にも片付けられないまま残ってしまい
+    // (publisher_pcが一度も接続状態に至らないため、既存の再接続時の自己修復判定
+    // にも引っかからない)、以後そのstream_idへの配信が永久に409になる不具合が
+    // あった。ネゴシエーション処理を切り出し、失敗時はここでRoomを明示的に破棄する。
+    let sdp = match negotiate(&pc, offer_sdp).await {
+        Ok(sdp) => sdp,
+        Err(e) => {
+            state.rooms.write().await.remove(&stream.id);
+            let _ = pc.close().await;
+            return Err(e);
+        }
+    };
+
+    let headers = [
+        (header::CONTENT_TYPE, SDP_MIME.to_string()),
+        (
+            header::LOCATION,
+            format!("/api/whip/resource/{}", stream.id),
+        ),
+    ];
+
+    Ok((StatusCode::CREATED, headers, sdp).into_response())
+}
+
+async fn negotiate(pc: &RTCPeerConnection, offer_sdp: String) -> AppResult<String> {
     let offer = RTCSessionDescription::offer(offer_sdp)?;
     pc.set_remote_description(offer).await?;
 
@@ -164,16 +191,7 @@ async fn publish(
         .local_description()
         .await
         .ok_or_else(|| AppError::from(anyhow::anyhow!("local descriptionの取得に失敗しました")))?;
-
-    let headers = [
-        (header::CONTENT_TYPE, SDP_MIME.to_string()),
-        (
-            header::LOCATION,
-            format!("/api/whip/resource/{}", stream.id),
-        ),
-    ];
-
-    Ok((StatusCode::CREATED, headers, local_desc.sdp).into_response())
+    Ok(local_desc.sdp)
 }
 
 /// `DELETE /api/whip/resource/{stream_id}` — OBS側の「配信終了」操作、または異常切断時に呼ばれる。
