@@ -1,0 +1,14 @@
+# Caddyfile例: live-server用リバースプロキシ設定。
+#
+# - live.example.com は実際のドメインに置き換えてください。
+# - Let's Encrypt証明書の自動取得・更新にはドメインが80/443番ポートで
+#   外部から到達可能である必要があります。
+# - WebRTCのメディア(音声/映像)はUDPで直接サーバへ到達するため、
+#   Caddyはここでは一切関与しません(HTTP/WSの署名・API通信のみ中継します)。
+#
+# 設置場所: /etc/caddy/Caddyfile (Ubuntu 24.04のcaddyパッケージの既定パス)
+# 反映: sudo systemctl reload caddy
+
+live.example.com {
+    reverse_proxy 127.0.0.1:8080
+}

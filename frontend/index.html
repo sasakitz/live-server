@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ライブ配信一覧 | live-server</title>
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<header class="header">
+  <a href="/" class="header__brand">📡 Live</a>
+  <nav class="header__nav" id="nav-links"></nav>
+</header>
+
+<main class="container">
+  <div class="section-title">
+    <h2>配信中</h2>
+  </div>
+  <div id="live-grid" class="grid"></div>
+  <div id="empty" class="empty-state" hidden>現在ライブ配信中の番組はありません。</div>
+</main>
+
+<script src="/js/common.js"></script>
+<script>
+let streams = [];
+
+function render() {
+  const grid = document.getElementById('live-grid');
+  const empty = document.getElementById('empty');
+  if (streams.length === 0) {
+    grid.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  grid.innerHTML = streams.map((s) => `
+    <a class="card stream-card" href="/watch/${encodeURIComponent(s.id)}">
+      <div class="stream-card__thumb">
+        <span class="badge badge--live"><span class="badge__dot"></span>LIVE</span>
+      </div>
+      <div class="stream-card__body">
+        <p class="stream-card__title">${escapeHtml(s.title)}</p>
+        <p class="stream-card__meta">👁 ${s.viewer_count}人視聴中${s.public ? ' ・ <span class="badge badge--public">公開</span>' : ''}</p>
+      </div>
+    </a>
+  `).join('');
+}
+
+async function load() {
+  try {
+    streams = await api('/api/streams');
+  } catch (e) {
+    streams = [];
+  }
+  render();
+}
+
+function upsertViewerCount(streamId, count) {
+  const s = streams.find((x) => x.id === streamId);
+  if (s) {
+    s.viewer_count = count;
+    render();
+  }
+}
+
+load();
+connectEvents((event) => {
+  if (event.type === 'stream_online' || event.type === 'stream_offline') {
+    load();
+  } else if (event.type === 'viewer_count') {
+    upsertViewerCount(event.stream_id, event.count);
+  }
+});
+</script>
+</body>
+</html>

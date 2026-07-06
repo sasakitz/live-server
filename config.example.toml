@@ -1,0 +1,46 @@
+# live-server 設定ファイルの例。
+# ローカルで試す場合は `cp config.example.toml config.toml` してから編集し、
+# `cargo run -- --config config.toml` で起動してください。
+
+[server]
+# アプリが内部でバインドするアドレス。本番はnginx/Caddy等のリバースプロキシ経由で
+# 外部公開する前提のため、通常は 127.0.0.1 のままでよい。
+bind = "127.0.0.1:8080"
+# 外部公開ホスト名(視聴URLの生成やWebhook通知の文面に使う)。
+public_host = "localhost:8080"
+# セッション鍵などの実行時データを保存するディレクトリ(自動生成される)。
+data_dir = "./data"
+# TLS終端リバースプロキシ(nginx/Caddy等)配下で動かす場合はtrue(既定)。
+# リバースプロキシなしで http://localhost に直接アクセスしてローカル確認する場合はfalseにする。
+secure_cookies = false
+
+[webrtc]
+# このサーバの公開IPアドレス。OBS/ブラウザ側のICE候補として広告されるため、
+# 実際に外部から到達可能なアドレスを指定する必要がある。
+# IPv4/IPv6を両方持つデュアルスタック環境では両方列挙できる:
+#   public_ips = ["203.0.113.10", "2001:db8::1"]
+# ローカルで動作確認するだけなら127.0.0.1でよい(LAN内までしか疎通しない)。
+public_ips = ["127.0.0.1"]
+# WebRTCメディア(SRTP/DTLS)に使うUDPポート範囲。ファイアウォールはこの範囲を開放する。
+udp_port_min = 5000
+udp_port_max = 5200
+# ブラウザ/OBS側のICEに使わせるSTUNサーバ。
+stun_servers = ["stun:stun.l.google.com:19302"]
+
+[auth]
+# trueにすると、未ログインユーザでもpublicな配信を視聴できる。
+public_viewing = false
+
+# 初回起動時、存在しなければ自動作成される管理者アカウント。
+# 起動後は必ずパスワードを変更するか、admin画面から新しい管理者を作って
+# このエントリを消してください。
+[[auth.admin_bootstrap]]
+username = "admin"
+password = "change-me-please"
+
+[discord]
+# 管理画面のWebhook設定とは別に、常に通知したい既定のWebhook URL(任意、無ければ削除可)。
+# default_webhook_url = "https://discord.com/api/webhooks/xxxx/yyyy"
+
+[db]
+url = "sqlite://./data/live.db"

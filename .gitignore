@@ -1,0 +1,9 @@
+/target
+
+# ローカル開発時に生成される実行時データ(秘密情報を含むため追跡しない)
+/config.toml
+/data/
+*.db
+*.db-shm
+*.db-wal
+session_key.bin

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ログイン | live-server</title>
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<header class="header">
+  <a href="/" class="header__brand">📡 Live</a>
+  <nav class="header__nav" id="nav-links"></nav>
+</header>
+
+<main class="container container--narrow">
+  <div class="card" style="margin-top:48px">
+    <h1 style="margin-top:0; font-size:1.25rem">ログイン</h1>
+    <form id="login-form">
+      <div class="field">
+        <label for="username">ユーザ名</label>
+        <input type="text" id="username" name="username" autocomplete="username" required />
+      </div>
+      <div class="field">
+        <label for="password">パスワード</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required />
+      </div>
+      <button type="submit" class="btn" style="width:100%">ログイン</button>
+      <p id="error" class="error-text" hidden></p>
+    </form>
+  </div>
+</main>
+
+<script src="/js/common.js"></script>
+<script>
+document.getElementById('login-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const errorEl = document.getElementById('error');
+  errorEl.hidden = true;
+  const username = document.getElementById('username').value;
+  const password = document.getElementById('password').value;
+  try {
+    await api('/api/login', { method: 'POST', body: { username, password } });
+    const params = new URLSearchParams(window.location.search);
+    window.location.href = params.get('next') || '/dashboard';
+  } catch (e) {
+    errorEl.textContent = e.message;
+    errorEl.hidden = false;
+  }
+});
+</script>
+</body>
+</html>

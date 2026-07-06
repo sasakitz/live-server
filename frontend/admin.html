@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>管理者設定 | live-server</title>
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<header class="header">
+  <a href="/" class="header__brand">📡 Live</a>
+  <nav class="header__nav" id="nav-links"></nav>
+</header>
+
+<main class="container">
+  <div class="section-title"><h2>管理者設定</h2></div>
+
+  <div class="tabs">
+    <button class="tab is-active" data-tab="overview">概要</button>
+    <button class="tab" data-tab="users">ユーザ</button>
+    <button class="tab" data-tab="streams">配信</button>
+    <button class="tab" data-tab="webhooks">Webhook</button>
+  </div>
+
+  <section id="tab-overview" class="tab-panel is-active">
+    <div class="grid" id="overview-stats"></div>
+  </section>
+
+  <section id="tab-users" class="tab-panel">
+    <div class="btn-row" style="margin-bottom:16px">
+      <button id="user-new-btn" class="btn btn--sm" type="button">＋ 新規ユーザ</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ユーザ名</th><th>ロール</th><th>状態</th><th>作成日</th><th></th></tr></thead>
+        <tbody id="users-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="user-form-card" style="margin-top:20px" hidden>
+      <h3 id="user-form-title" style="margin-top:0">新規ユーザ</h3>
+      <form id="user-form">
+        <input type="hidden" id="user-id" />
+        <div class="field">
+          <label for="user-username">ユーザ名</label>
+          <input type="text" id="user-username" required />
+        </div>
+        <div class="field">
+          <label for="user-password">パスワード<span id="user-password-optional" class="text-muted" hidden>(変更する場合のみ入力)</span></label>
+          <input type="password" id="user-password" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="user-role">ロール</label>
+          <select id="user-role">
+            <option value="broadcaster">broadcaster (配信者)</option>
+            <option value="admin">admin (管理者)</option>
+          </select>
+        </div>
+        <div class="field checkbox-row">
+          <input type="checkbox" id="user-disabled" />
+          <label for="user-disabled" style="margin:0">無効化する</label>
+        </div>
+        <div class="btn-row">
+          <button type="submit" class="btn btn--sm">保存</button>
+          <button type="button" class="btn btn--secondary btn--sm" id="user-cancel-btn">キャンセル</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section id="tab-streams" class="tab-panel">
+    <div class="btn-row" style="margin-bottom:16px">
+      <button id="stream-new-btn" class="btn btn--sm" type="button">＋ 新規配信</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>タイトル</th><th>配信者</th><th>状態</th><th>公開</th><th>視聴者</th><th></th></tr></thead>
+        <tbody id="streams-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="stream-form-card" style="margin-top:20px" hidden>
+      <h3 id="stream-form-title" style="margin-top:0">新規配信</h3>
+      <form id="stream-form">
+        <div class="field">
+          <label for="stream-id">配信ID (URLに使用。作成後は変更不可)</label>
+          <input type="text" id="stream-id" pattern="[a-z0-9-]+" placeholder="例: yamada-radio" required />
+        </div>
+        <div class="field">
+          <label for="stream-owner">配信者(ユーザ)</label>
+          <select id="stream-owner"></select>
+        </div>
+        <div class="field">
+          <label for="stream-title">タイトル</label>
+          <input type="text" id="stream-title" required />
+        </div>
+        <div class="field">
+          <label for="stream-desc">説明</label>
+          <textarea id="stream-desc"></textarea>
+        </div>
+        <div class="field checkbox-row">
+          <input type="checkbox" id="stream-public" />
+          <label for="stream-public" style="margin:0">ログインなしで視聴可能(公開)にする</label>
+        </div>
+        <div class="btn-row">
+          <button type="submit" class="btn btn--sm">保存</button>
+          <button type="button" class="btn btn--secondary btn--sm" id="stream-cancel-btn">キャンセル</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <section id="tab-webhooks" class="tab-panel">
+    <p class="help-text mt-0">配信の開始/終了をDiscordなどのWebhook URLへ通知します。</p>
+    <div class="btn-row" style="margin-bottom:16px">
+      <button id="webhook-new-btn" class="btn btn--sm" type="button">＋ 新規Webhook</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>名前</th><th>URL</th><th>開始通知</th><th>終了通知</th><th>有効</th><th></th></tr></thead>
+        <tbody id="webhooks-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="webhook-form-card" style="margin-top:20px" hidden>
+      <h3 id="webhook-form-title" style="margin-top:0">新規Webhook</h3>
+      <form id="webhook-form">
+        <input type="hidden" id="webhook-id" />
+        <div class="field">
+          <label for="webhook-name">名前</label>
+          <input type="text" id="webhook-name" required />
+        </div>
+        <div class="field">
+          <label for="webhook-url">Webhook URL</label>
+          <input type="url" id="webhook-url" required placeholder="https://discord.com/api/webhooks/..." />
+        </div>
+        <div class="field checkbox-row"><input type="checkbox" id="webhook-start" checked /><label for="webhook-start" style="margin:0">配信開始時に通知</label></div>
+        <div class="field checkbox-row"><input type="checkbox" id="webhook-stop" checked /><label for="webhook-stop" style="margin:0">配信終了時に通知</label></div>
+        <div class="field checkbox-row"><input type="checkbox" id="webhook-enabled" checked /><label for="webhook-enabled" style="margin:0">有効</label></div>
+        <div class="btn-row">
+          <button type="submit" class="btn btn--sm">保存</button>
+          <button type="button" class="btn btn--secondary btn--sm" id="webhook-test-btn">テスト送信</button>
+          <button type="button" class="btn btn--secondary btn--sm" id="webhook-cancel-btn">キャンセル</button>
+        </div>
+      </form>
+    </div>
+  </section>
+</main>
+
+<script src="/js/common.js"></script>
+<script src="/js/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+# live-server 本番用設定例。
+# /etc/live-server/config.toml として配置する(install.sh参照)。
+# 値は必ず環境に合わせて書き換えてください。
+
+[server]
+bind = "127.0.0.1:8080"
+public_host = "live.example.com"
+data_dir = "/var/lib/live-server"
+secure_cookies = true
+
+[webrtc]
+# このサーバの「公開」IPアドレス。OBS/ブラウザのICE候補として広告される。
+# クラウドVMの場合は割り当てられたグローバルIP、自宅サーバ等の場合は
+# ルータのグローバルIP(+ポート開放/DMZ設定)を指定する。
+# IPv4/IPv6のデュアルスタックであれば両方列挙できる:
+#   public_ips = ["203.0.113.10", "2001:db8::1"]
+public_ips = ["203.0.113.10"]
+udp_port_min = 5000
+udp_port_max = 5200
+stun_servers = ["stun:stun.l.google.com:19302"]
+
+[auth]
+public_viewing = false
+
+[[auth.admin_bootstrap]]
+username = "admin"
+password = "change-me-please"
+
+[discord]
+# default_webhook_url = "https://discord.com/api/webhooks/xxxx/yyyy"
+
+[db]
+url = "sqlite:///var/lib/live-server/live.db"

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>視聴 | live-server</title>
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<header class="header">
+  <a href="/" class="header__brand">📡 Live</a>
+  <nav class="header__nav" id="nav-links"></nav>
+</header>
+
+<main class="container container--narrow" style="max-width:900px">
+  <div class="player-wrap" id="player-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="player-overlay" id="overlay">読み込み中...</div>
+  </div>
+
+  <div class="player-controls">
+    <button id="unmute-btn" class="btn btn--secondary btn--sm" type="button" hidden>🔇 ミュート解除</button>
+    <span class="flex-spacer"></span>
+    <span id="viewer-count" class="text-muted"></span>
+  </div>
+
+  <div class="section-title">
+    <h2 id="title">-</h2>
+    <span id="live-badge"></span>
+  </div>
+  <p id="description" class="text-muted"></p>
+  <p id="elapsed" class="help-text"></p>
+</main>
+
+<script src="/js/common.js"></script>
+<script src="/js/whep.js"></script>
+<script>
+const streamId = decodeURIComponent(window.location.pathname.replace(/^\/watch\//, ''));
+let session = null;
+let startedAt = null;
+let elapsedTimer = null;
+
+function setOverlay(text) {
+  const overlay = document.getElementById('overlay');
+  overlay.textContent = text;
+  overlay.hidden = !text;
+}
+
+function renderMeta(meta) {
+  document.title = `${meta.title} | live-server`;
+  document.getElementById('title').textContent = meta.title;
+  document.getElementById('description').textContent = meta.description || '';
+  document.getElementById('viewer-count').textContent = meta.is_live ? `👁 ${meta.viewer_count}人視聴中` : '';
+  document.getElementById('live-badge').innerHTML = meta.is_live
+    ? '<span class="badge badge--live"><span class="badge__dot"></span>LIVE</span>'
+    : '<span class="badge badge--offline">オフライン</span>';
+
+  startedAt = meta.started_at;
+  clearInterval(elapsedTimer);
+  if (startedAt) {
+    const tick = () => { document.getElementById('elapsed').textContent = formatRelativeStart(startedAt); };
+    tick();
+    elapsedTimer = setInterval(tick, 1000);
+  } else {
+    document.getElementById('elapsed').textContent = '';
+  }
+}
+
+async function startPlayback() {
+  const video = document.getElementById('video');
+  try {
+    session = await startWhep(streamId, video, (state) => {
+      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+        setOverlay('接続が切れました。再読み込みしてください。');
+      }
+    });
+    setOverlay('');
+    video.play().catch(() => {
+      // 自動再生ブロック時はユーザ操作を待つ(ミュート状態なので通常はブロックされない)。
+    });
+  } catch (e) {
+    setOverlay(`視聴を開始できませんでした: ${e.message}`);
+  }
+}
+
+async function load() {
+  let meta;
+  try {
+    meta = await api(`/api/streams/${encodeURIComponent(streamId)}`);
+  } catch (e) {
+    setOverlay(e.message.includes('401') || /ログイン/.test(e.message)
+      ? '視聴にはログインが必要です'
+      : '配信が見つかりません');
+    return;
+  }
+  renderMeta(meta);
+  if (meta.is_live) {
+    await startPlayback();
+  } else {
+    setOverlay('配信は行われていません');
+  }
+}
+
+document.getElementById('unmute-btn').addEventListener('click', () => {
+  const video = document.getElementById('video');
+  video.muted = false;
+  document.getElementById('unmute-btn').hidden = true;
+});
+document.getElementById('video').addEventListener('loadedmetadata', () => {
+  document.getElementById('unmute-btn').hidden = false;
+});
+
+window.addEventListener('pagehide', () => {
+  if (session) session.stop();
+});
+
+connectEvents((event) => {
+  if (event.stream_id !== streamId) return;
+  if (event.type === 'stream_online') {
+    load();
+  } else if (event.type === 'stream_offline') {
+    if (session) session.stop();
+    session = null;
+    setOverlay('配信は終了しました');
+    document.getElementById('viewer-count').textContent = '';
+    document.getElementById('live-badge').innerHTML = '<span class="badge badge--offline">オフライン</span>';
+    clearInterval(elapsedTimer);
+    document.getElementById('elapsed').textContent = '';
+  } else if (event.type === 'viewer_count') {
+    document.getElementById('viewer-count').textContent = `👁 ${event.count}人視聴中`;
+  }
+});
+
+load();
+</script>
+</body>
+</html>

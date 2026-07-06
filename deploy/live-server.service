@@ -1,0 +1,29 @@
+[Unit]
+Description=live-server (OBS low-latency WebRTC live streaming server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=live-server
+Group=live-server
+ExecStart=/usr/local/bin/live-server --config /etc/live-server/config.toml
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+
+# --- セキュリティ強化 ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/live-server
+
+[Install]
+WantedBy=multi-user.target
