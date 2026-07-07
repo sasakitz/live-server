@@ -603,9 +603,9 @@ pub fn router() -> Router<AppState> {
         .route("/streams/{id}/regenerate-key", post(regenerate_key))
         .route("/streams/{id}/stop", post(stop_stream_handler))
         .route("/webhooks", get(list_webhooks).post(create_webhook))
+        .route("/webhooks/test", post(test_webhook))
         .route(
             "/webhooks/{id}",
             patch(update_webhook).delete(delete_webhook),
         )
-        .route("/webhooks/{id}/test", post(test_webhook))
 }

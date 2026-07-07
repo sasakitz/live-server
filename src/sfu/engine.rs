@@ -128,8 +128,16 @@ pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
     // 注意: set_network_types(vec![Udp4])のようにアドレス"ファミリ"単位で絞り込むと、
     // 環境によっては候補が1件も生成されずICE接続不能になる現象を別途確認したため、
     // そちらは意図的に使っていない(アドレス単位のset_ip_filterのみを用いる)。
-    let allowed_ips: std::collections::HashSet<std::net::IpAddr> =
-        cfg.public_ips.iter().copied().collect();
+    // bind_ipsが未指定ならpublic_ipsをそのまま使う(public_ipsがNICに直接付いている
+    // クラウドVM等の構成)。自宅サーバ等、public_ipsがルータ経由のグローバルIPで
+    // NICには存在しない構成では、bind_ipsにサーバ機自身のLAN側IPを指定させる
+    // (WebRtcConfig::bind_ipsのコメント参照)。
+    let bind_ips = if cfg.bind_ips.is_empty() {
+        &cfg.public_ips
+    } else {
+        &cfg.bind_ips
+    };
+    let allowed_ips: std::collections::HashSet<std::net::IpAddr> = bind_ips.iter().copied().collect();
     setting_engine.set_ip_filter(Box::new(move |ip| allowed_ips.contains(&ip)));
 
     let api = APIBuilder::new()

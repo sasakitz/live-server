@@ -71,6 +71,14 @@ pub struct WebRtcConfig {
     /// アドレスファミリのICE候補にのみ1:1 NATマッピングとして適用される。
     #[serde(deserialize_with = "deserialize_public_ips")]
     pub public_ips: Vec<IpAddr>,
+    /// ICE候補収集の対象を絞り込むためのローカルNICアドレス。
+    /// 空(既定)の場合はpublic_ipsと同じ値を使う(クラウドVM等、public_ipsがNICに
+    /// 直接付いている場合はこれで問題ない)。自宅サーバ等でルータのポート開放/DMZ経由
+    /// のグローバルIPをpublic_ipsに指定している場合、そのIPはNICには存在しないため、
+    /// ここにサーバ機自身のLAN側IP(例: `192.168.1.7`)を明示する必要がある
+    /// (指定しないとICE候補が1つも生成されず配信が確立しない)。
+    #[serde(default)]
+    pub bind_ips: Vec<IpAddr>,
     /// WebRTCメディア(SRTP/DTLS)に使うUDPポート範囲の下限。ファイアウォールはこの範囲を開放する。
     #[serde(default = "default_udp_port_min")]
     pub udp_port_min: u16,
