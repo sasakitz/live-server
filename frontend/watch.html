@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>視聴 | MyuTube</title>
+<title>視聴 | μTube</title>
 <link rel="icon" href="/favicon.ico" />
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
 <header class="header">
-  <a href="/" class="header__brand">📡 MyuTube</a>
+  <a href="/" class="header__brand">🖥️ μTube</a>
   <nav class="header__nav" id="nav-links"></nav>
 </header>
 
@@ -49,7 +49,7 @@ function setOverlay(text) {
 }
 
 function renderMeta(meta) {
-  document.title = `${meta.title} | MyuTube`;
+  document.title = `${meta.title} | μTube`;
   document.getElementById('title').textContent = meta.title;
   document.getElementById('description').textContent = meta.description || '';
   document.getElementById('viewer-count').textContent = meta.is_live ? `👁 ${meta.viewer_count}人視聴中` : '';
