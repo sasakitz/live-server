@@ -11,7 +11,6 @@ use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, API};
 use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
-use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
 use webrtc::rtp_transceiver::RTCPFeedback;
@@ -140,15 +139,4 @@ pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
         .build();
 
     Ok(api)
-}
-
-/// ブラウザ/OBS側のICEに使わせるSTUNサーバ一覧。WHIP/WHEP双方の`RTCConfiguration`で共有する。
-pub fn ice_servers(cfg: &WebRtcConfig) -> Vec<RTCIceServer> {
-    cfg.stun_servers
-        .iter()
-        .map(|url| RTCIceServer {
-            urls: vec![url.clone()],
-            ..Default::default()
-        })
-        .collect()
 }

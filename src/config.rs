@@ -77,7 +77,12 @@ pub struct WebRtcConfig {
     /// UDPポート範囲の上限。
     #[serde(default = "default_udp_port_max")]
     pub udp_port_max: u16,
-    /// ブラウザ/OBS側のICEに使わせるSTUNサーバ(サーバ自体はpublic_ipsで直接到達可能なためSTUN不要)。
+    /// ブラウザ側のICEに使わせるSTUNサーバ(`/api/client-config`経由で配布)。
+    /// サーバ自体はpublic_ipsで直接到達可能なためSTUN不要であり、サーバ自身の
+    /// RTCConfigurationには渡さないこと。渡すとICE候補収集がip_filter/public_ips
+    /// による制限を経由せずにSTUNサーバへ問い合わせてしまい(webrtc-iceの
+    /// gather_candidates_srflxはip_filterを見ない)、public_ipsでIPv4のみに
+    /// 絞ったつもりでもサーバがIPv6のsrflx候補を広告してしまう不具合を招く。
     #[serde(default = "default_stun_servers")]
     pub stun_servers: Vec<String>,
 }

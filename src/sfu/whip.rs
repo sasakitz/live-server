@@ -17,7 +17,6 @@ use webrtc::track::track_local::TrackLocalWriter;
 
 use crate::error::{AppError, AppResult};
 use crate::models::Stream;
-use crate::sfu::engine;
 use crate::sfu::lifecycle;
 use crate::sfu::room::Room;
 use crate::state::AppState;
@@ -82,11 +81,14 @@ async fn publish(
         }
     }
 
-    let config = RTCConfiguration {
-        ice_servers: engine::ice_servers(&state.config.webrtc),
-        ..Default::default()
-    };
-    let pc = Arc::new(state.webrtc_api.new_peer_connection(config).await?);
+    // public_ipsで自身の公開アドレスを直接把握しているため、STUNサーバは不要
+    // (詳細はsfu/engine.rsのWebRtcConfig::public_ipsのコメント参照)。
+    let pc = Arc::new(
+        state
+            .webrtc_api
+            .new_peer_connection(RTCConfiguration::default())
+            .await?,
+    );
 
     let room = Arc::new(Room::new(stream.id.clone()));
     *room.publisher_pc.write().await = Some(pc.clone());

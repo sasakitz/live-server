@@ -24,7 +24,8 @@ public_ips = ["127.0.0.1"]
 # WebRTCメディア(SRTP/DTLS)に使うUDPポート範囲。ファイアウォールはこの範囲を開放する。
 udp_port_min = 5000
 udp_port_max = 5200
-# ブラウザ/OBS側のICEに使わせるSTUNサーバ。
+# ブラウザ側のICEに使わせるSTUNサーバ(/api/client-config経由で配布)。
+# サーバ自体はpublic_ipsで直接到達可能なためSTUN不要(サーバ自身のRTCConfigurationには渡さない)。
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [auth]

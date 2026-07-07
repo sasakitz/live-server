@@ -17,7 +17,6 @@ use webrtc::track::track_local::TrackLocal;
 use crate::auth::CurrentUser;
 use crate::error::{AppError, AppResult};
 use crate::models::Stream;
-use crate::sfu::engine;
 use crate::state::{AppEvent, AppState};
 
 const SDP_MIME: &str = "application/sdp";
@@ -50,11 +49,14 @@ async fn watch(
     }
     .ok_or_else(|| AppError::conflict("配信は現在オフラインです"))?;
 
-    let config = RTCConfiguration {
-        ice_servers: engine::ice_servers(&state.config.webrtc),
-        ..Default::default()
-    };
-    let pc = Arc::new(state.webrtc_api.new_peer_connection(config).await?);
+    // public_ipsで自身の公開アドレスを直接把握しているため、STUNサーバは不要
+    // (詳細はsfu/engine.rsのWebRtcConfig::public_ipsのコメント参照)。
+    let pc = Arc::new(
+        state
+            .webrtc_api
+            .new_peer_connection(RTCConfiguration::default())
+            .await?,
+    );
 
     // set_remote_descriptionより前にadd_trackでRoomの共有トラックを紐付けたsendrecv
     // transceiverを用意しておく。sendrecvはブラウザのrecvonlyオファーとのマッチングで
