@@ -56,6 +56,11 @@ echo "==> systemdユニットを配置"
 install -o root -g root -m 644 "$REPO_DIR/deploy/live-server.service" /etc/systemd/system/live-server.service
 systemctl daemon-reload
 
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "==> 注意: ffmpegが見つかりません(配信一覧のサムネイル生成に使用します)"
+  echo "    'apt install ffmpeg' 等でインストールしてください(必須ではありません)。"
+fi
+
 cat <<'EOF'
 
 セットアップが完了しました。残りの手順:

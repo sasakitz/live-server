@@ -19,6 +19,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::Stream;
 use crate::sfu::lifecycle;
 use crate::sfu::room::Room;
+use crate::sfu::thumbnail::{self, ThumbnailCapturer};
 use crate::state::AppState;
 
 const SDP_MIME: &str = "application/sdp";
@@ -105,17 +106,33 @@ async fn publish(
         pc.on_track(Box::new(move |track, _receiver, _transceiver| {
             let room = room.clone();
             Box::pin(async move {
-                let local_track = if track.kind() == RTPCodecType::Video {
+                let is_video = track.kind() == RTPCodecType::Video;
+                let local_track = if is_video {
                     room.video_track.clone()
                 } else {
                     room.audio_track.clone()
                 };
+                let room = room.clone();
                 tokio::spawn(async move {
+                    // 配信一覧のサムネイル用に、Video RTPだけ並行してAnnex-B断片へ
+                    // 再構成する(詳細はsfu/thumbnail.rs参照)。中継のホットパス自体は
+                    // write_rtpのみで、ffmpeg起動は別タスクに逃がして遅延させない。
+                    let mut capturer = is_video.then(ThumbnailCapturer::new);
                     loop {
                         match track.read_rtp().await {
                             Ok((packet, _attributes)) => {
                                 if local_track.write_rtp(&packet).await.is_err() {
                                     break;
+                                }
+                                if let Some(capturer) = capturer.as_mut() {
+                                    if let Some(annexb) = capturer.push(&packet) {
+                                        let room = room.clone();
+                                        tokio::spawn(async move {
+                                            if let Some(jpeg) = thumbnail::encode_jpeg(annexb).await {
+                                                *room.thumbnail.write().await = Some(jpeg);
+                                            }
+                                        });
+                                    }
                                 }
                             }
                             Err(_) => break,

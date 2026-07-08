@@ -37,6 +37,9 @@ function render() {
   grid.innerHTML = streams.map((s) => `
     <a class="card stream-card" href="/watch/${encodeURIComponent(s.id)}">
       <div class="stream-card__thumb">
+        <img class="stream-card__thumb-img" data-stream-id="${escapeHtml(s.id)}"
+          src="/api/streams/${encodeURIComponent(s.id)}/thumbnail.jpg" alt="" loading="lazy"
+          onerror="this.remove()" />
         <span class="badge badge--live"><span class="badge__dot"></span>LIVE</span>
       </div>
       <div class="stream-card__body">
@@ -45,6 +48,14 @@ function render() {
       </div>
     </a>
   `).join('');
+}
+
+/** サムネイルは配信一覧の再描画とは無関係に、一定間隔で明示的に再取得する。 */
+function refreshThumbnails() {
+  document.querySelectorAll('.stream-card__thumb-img').forEach((img) => {
+    const id = img.dataset.streamId;
+    img.src = `/api/streams/${encodeURIComponent(id)}/thumbnail.jpg?t=${Date.now()}`;
+  });
 }
 
 async function load() {
@@ -65,6 +76,7 @@ function upsertViewerCount(streamId, count) {
 }
 
 load();
+setInterval(refreshThumbnails, 10000);
 connectEvents((event) => {
   if (event.type === 'stream_online' || event.type === 'stream_offline') {
     load();

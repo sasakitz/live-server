@@ -2,6 +2,8 @@
 //! 視聴認可(ログイン要否)はWHEPと同じルールを使う。
 
 use axum::extract::{Path, State};
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
@@ -90,8 +92,48 @@ async fn get_one(
     Ok(Json(to_public_info(&state, stream).await))
 }
 
+/// `GET /api/streams/{id}/thumbnail.jpg` — 配信中サムネイル(直近のキャプチャ結果)。
+/// まだ1枚もキャプチャできていない場合(配信開始直後など)は404を返す。
+async fn thumbnail(
+    State(state): State<AppState>,
+    Path(stream_id): Path<String>,
+    current_user: Option<CurrentUser>,
+) -> AppResult<Response> {
+    let logged_in = current_user.is_some();
+    let stream = sqlx::query_as::<_, Stream>("SELECT * FROM streams WHERE id = ?")
+        .bind(&stream_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::not_found("配信が見つかりません"))?;
+
+    if !visible(&stream, &state, logged_in) {
+        return Err(AppError::unauthorized("視聴にはログインが必要です"));
+    }
+
+    let jpeg = {
+        let rooms = state.rooms.read().await;
+        match rooms.get(&stream_id) {
+            Some(room) => room.thumbnail.read().await.clone(),
+            None => None,
+        }
+    };
+
+    match jpeg {
+        Some(bytes) => Ok((
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes.to_vec(),
+        )
+            .into_response()),
+        None => Err(AppError::not_found("サムネイルはまだ生成されていません")),
+    }
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_live))
         .route("/{stream_id}", get(get_one))
+        .route("/{stream_id}/thumbnail.jpg", get(thumbnail))
 }

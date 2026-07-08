@@ -151,11 +151,21 @@ video {
   position: relative;
   aspect-ratio: 16 / 9;
   background: #0f172a;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #64748b;
-  font-size: 0.85rem;
+  overflow: hidden;
+}
+
+.stream-card__thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.stream-card__thumb .badge--live {
+  position: absolute;
+  top: 8px;
+  left: 8px;
 }
 
 .stream-card__body {
@@ -365,7 +375,6 @@ tr:last-child td {
   width: 100%;
   aspect-ratio: 16 / 9;
   background: #000;
-  border-radius: var(--radius);
   overflow: hidden;
 }
 
@@ -408,6 +417,13 @@ tr:last-child td {
   padding: 10px 12px;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
   flex-wrap: wrap;
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+
+.player-controls.is-hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .player-controls .text-muted {

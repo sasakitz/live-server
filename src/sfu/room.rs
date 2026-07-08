@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use bytes::Bytes;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -20,6 +21,8 @@ pub struct Room {
     pub audio_track: Arc<TrackLocalStaticRTP>,
     pub viewers: RwLock<HashMap<ViewerId, Arc<RTCPeerConnection>>>,
     pub publisher_pc: RwLock<Option<Arc<RTCPeerConnection>>>,
+    /// 配信一覧向けの直近サムネイル(JPEG)。`sfu::thumbnail`が定期的に更新する。
+    pub thumbnail: RwLock<Option<Bytes>>,
     viewer_count: AtomicUsize,
     peak_viewers: AtomicUsize,
 }
@@ -42,6 +45,7 @@ impl Room {
             audio_track,
             viewers: RwLock::new(HashMap::new()),
             publisher_pc: RwLock::new(None),
+            thumbnail: RwLock::new(None),
             viewer_count: AtomicUsize::new(0),
             peak_viewers: AtomicUsize::new(0),
         }

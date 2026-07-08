@@ -13,19 +13,19 @@
   <nav class="header__nav" id="nav-links"></nav>
 </header>
 
-<main class="container container--narrow" style="max-width:900px">
-  <div class="player-wrap" id="player-wrap">
-    <video id="video" autoplay playsinline muted></video>
-    <div class="player-overlay" id="overlay">読み込み中...</div>
-    <div class="player-controls">
-      <button id="mute-btn" class="btn btn--secondary btn--sm" type="button" hidden></button>
-      <input type="range" id="volume-slider" class="volume-slider" min="0" max="100" value="100" hidden />
-      <span class="flex-spacer"></span>
-      <span id="viewer-count" class="text-muted"></span>
-      <button id="fullscreen-btn" class="btn btn--secondary btn--sm" type="button" hidden>⛶</button>
-    </div>
+<div class="player-wrap" id="player-wrap">
+  <video id="video" autoplay playsinline muted></video>
+  <div class="player-overlay" id="overlay">読み込み中...</div>
+  <div class="player-controls">
+    <button id="mute-btn" class="btn btn--secondary btn--sm" type="button" hidden></button>
+    <input type="range" id="volume-slider" class="volume-slider" min="0" max="100" value="100" hidden />
+    <span class="flex-spacer"></span>
+    <span id="viewer-count" class="text-muted"></span>
+    <button id="fullscreen-btn" class="btn btn--secondary btn--sm" type="button" hidden>⛶</button>
   </div>
+</div>
 
+<main class="container container--narrow" style="max-width:900px">
   <div class="section-title">
     <h2 id="title">-</h2>
     <span id="live-badge"></span>
@@ -153,6 +153,29 @@ fullscreenBtn.addEventListener('click', () => {
     document.exitFullscreen().catch(() => {});
   }
 });
+
+// コントロールバー(音量/ミュート/全画面)は3秒間無操作だと隠す。
+const playerWrap = document.getElementById('player-wrap');
+const playerControls = document.querySelector('.player-controls');
+let hideControlsTimer = null;
+
+function showControls() {
+  playerControls.classList.remove('is-hidden');
+  scheduleHideControls();
+}
+
+function scheduleHideControls() {
+  clearTimeout(hideControlsTimer);
+  hideControlsTimer = setTimeout(() => playerControls.classList.add('is-hidden'), 3000);
+}
+
+['mousemove', 'mouseenter', 'touchstart', 'click', 'keydown'].forEach((evt) => {
+  playerWrap.addEventListener(evt, showControls);
+});
+// コントロールバー上にいる間(スライダー操作中など)は隠さない。
+playerControls.addEventListener('mouseenter', () => clearTimeout(hideControlsTimer));
+playerControls.addEventListener('mouseleave', scheduleHideControls);
+showControls();
 
 window.addEventListener('pagehide', () => {
   if (session) session.stop();
