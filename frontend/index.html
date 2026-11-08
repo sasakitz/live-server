@@ -17,10 +17,8 @@
 <main id="main-content" class="container">
   <section class="hero" aria-labelledby="page-title">
     <div>
-      <span class="eyebrow">YOUR MOMENT, LIVE.</span>
-      <h1 id="page-title">いま、つながるライブ。</h1>
-      <p>気になる配信を見つけて、そのまま視聴。<br>リアルタイムのひとときを、μTubeで。</p>
-      <a href="/dashboard" class="btn">自分の配信を管理 <span aria-hidden="true">↗</span></a>
+      <h1 id="page-title">ライブ配信一覧</h1>
+      <a href="/dashboard" class="btn">配信管理 <span aria-hidden="true">↗</span></a>
     </div>
     <div class="hero__status" aria-label="現在の配信状況">
       <span class="badge badge--public" id="hero-status">確認中</span>
@@ -45,13 +43,12 @@
     <div id="live-grid" class="grid" aria-busy="true"></div>
     <div id="empty" class="empty-state" hidden>
       <span class="empty-state__icon" aria-hidden="true">▷</span>
-      <h2 id="empty-title">次のライブを、お楽しみに。</h2>
-      <p id="empty-description">現在配信中のライブはありません。配信が始まると、ここに表示されます。</p>
+      <h2 id="empty-title">現在配信中のライブはありません</h2>
+      <p id="empty-description">配信開始時に一覧を自動更新します。</p>
       <button id="clear-search" type="button" class="btn btn--secondary" hidden>検索をクリア</button>
     </div>
   </section>
 </main>
-<footer class="site-footer"><span>μTube</span><span>ライブで、もっと身近に。</span></footer>
 <script src="/js/common.js"></script>
 <script src="/js/home.js"></script>
 </body>

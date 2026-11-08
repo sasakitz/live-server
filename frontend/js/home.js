@@ -12,9 +12,9 @@ function render() {
   document.getElementById('hero-status').textContent = loadFailed ? '取得できません' : streams.length > 0 ? 'LIVE NOW' : 'STANDBY';
   document.getElementById('live-count').textContent = loadFailed ? '取得できません' : `${filtered.length}件`;
   document.getElementById('empty').hidden = loadFailed || filtered.length > 0;
-  document.getElementById('empty-title').textContent = query ? '条件に合うライブが見つかりません' : '次のライブを、お楽しみに。';
+  document.getElementById('empty-title').textContent = query ? '条件に合うライブが見つかりません' : '現在配信中のライブはありません';
   document.getElementById('empty-description').textContent = query
-    ? '別のキーワードで検索してみてください。' : '現在配信中のライブはありません。配信が始まると、ここに表示されます。';
+    ? 'タイトルや説明に一致する配信はありません。' : '配信開始時に一覧を自動更新します。';
   document.getElementById('clear-search').hidden = !query;
   grid.innerHTML = filtered.map((s) => `
     <a class="card stream-card" href="/watch/${encodeURIComponent(s.id)}">
@@ -30,7 +30,7 @@ function render() {
       </div>
       <div class="stream-card__body">
         <h3 class="stream-card__title">${escapeHtml(s.title)}</h3>
-        <p class="stream-card__description">${escapeHtml(s.description || '配信を開いて、ライブに参加しましょう。')}</p>
+        ${s.description ? `<p class="stream-card__description">${escapeHtml(s.description)}</p>` : ''}
         <p class="stream-card__meta"><span>${Number(s.viewer_count)}人が視聴中</span><span>${s.public ? '公開配信' : '視聴する ↗'}</span></p>
       </div>
     </a>
