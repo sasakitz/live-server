@@ -11,6 +11,10 @@ use axum::Router;
 use uuid::Uuid;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::rtcp::payload_feedbacks::{
+    full_intra_request::FullIntraRequest, picture_loss_indication::PictureLossIndication,
+};
+use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::TrackLocal;
 
 use crate::auth::CurrentUser;
@@ -20,6 +24,23 @@ use crate::sfu::negotiate;
 use crate::state::{AppEvent, AppState};
 
 const SDP_MIME: &str = "application/sdp";
+
+/// read_rtcpを回して初めてwebrtc-rsのNACK interceptorが再送要求を処理する。
+/// PLI/FIRは配信元へ届け、その他のRTCPは各PeerConnection内で処理する。
+fn read_viewer_feedback(sender: Arc<RTCRtpSender>, room: Option<Arc<crate::sfu::room::Room>>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Ok((packets, _)) = sender.read_rtcp().await {
+            if let Some(room) = &room {
+                if packets.iter().any(|packet| {
+                    packet.as_any().is::<PictureLossIndication>()
+                        || packet.as_any().is::<FullIntraRequest>()
+                }) {
+                    room.request_keyframe().await;
+                }
+            }
+        }
+    })
+}
 
 /// `POST /api/whep/{stream_id}` — ブラウザはこのURLにSDP offer(recvonly)をPOSTする。
 /// 視聴認可: 配信がpublicか、site-wideでpublic_viewingが有効か、ログイン済みのいずれか。
@@ -67,10 +88,12 @@ async fn watch(
     // "new track must have the same envelope as previous"エラーになる
     // (replace_trackは「既存トラックの差し替え」専用で、初回設定には使えない)。
     let negotiation = async {
-        pc.add_track(room.video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+        let video_sender = pc.add_track(room.video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
-        pc.add_track(room.audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+        let audio_sender = pc.add_track(room.audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
+        read_viewer_feedback(video_sender, Some(room.clone()));
+        read_viewer_feedback(audio_sender, None);
         negotiate(&pc, offer_sdp).await
     }
     .await;
@@ -157,4 +180,135 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/{stream_id}", post(watch))
         .route("/resource/{viewer_id}", delete(terminate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use webrtc::api::{APIBuilder, interceptor_registry::register_default_interceptors,
+        media_engine::MediaEngine, setting_engine::SettingEngine};
+    use webrtc::interceptor::registry::Registry;
+    use webrtc::rtcp::payload_feedbacks::full_intra_request::FirEntry;
+    use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
+    use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTPCodecType};
+    use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+
+    async fn peer() -> Arc<webrtc::peer_connection::RTCPeerConnection> {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let mut media = MediaEngine::default();
+        media.register_codec(RTCRtpCodecParameters {
+            capability: crate::sfu::engine::h264_capability(),
+            payload_type: 102,
+            ..Default::default()
+        }, RTPCodecType::Video).unwrap();
+        let registry = register_default_interceptors(Registry::new(), &mut media).unwrap();
+        let mut settings = SettingEngine::default();
+        settings.set_include_loopback_candidate(true);
+        // 再送を観測するテスト用。既に受信済みのパケットを再送要求するため。
+        settings.disable_srtp_replay_protection(true);
+        settings.set_ip_filter(Box::new(|ip| ip.is_loopback()));
+        Arc::new(APIBuilder::new().with_media_engine(media)
+            .with_interceptor_registry(registry).with_setting_engine(settings)
+            .build().new_peer_connection(Default::default()).await.unwrap())
+    }
+
+    async fn connect(sender: &webrtc::peer_connection::RTCPeerConnection,
+        receiver: &webrtc::peer_connection::RTCPeerConnection) {
+        let offer = sender.create_offer(None).await.unwrap();
+        let mut gathering = sender.gathering_complete_promise().await;
+        sender.set_local_description(offer).await.unwrap();
+        gathering.recv().await;
+        receiver.set_remote_description(sender.local_description().await.unwrap()).await.unwrap();
+        let answer = receiver.create_answer(None).await.unwrap();
+        let mut gathering = receiver.gathering_complete_promise().await;
+        receiver.set_local_description(answer).await.unwrap();
+        gathering.recv().await;
+        sender.set_remote_description(receiver.local_description().await.unwrap()).await.unwrap();
+        while sender.connection_state() != RTCPeerConnectionState::Connected
+            || receiver.connection_state() != RTCPeerConnectionState::Connected {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn viewer_feedback_retransmits_rtp_requests_keyframes_and_stops_on_close() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let publisher = peer().await;
+            let ingest = peer().await;
+            let egress = peer().await;
+            let viewer = peer().await;
+            let room = Arc::new(crate::sfu::room::Room::new("feedback-test".into()));
+            let publisher_track = Arc::new(TrackLocalStaticRTP::new(
+                crate::sfu::engine::h264_capability(), "video".into(), "publisher".into()));
+            let publisher_sender = publisher.add_track(publisher_track).await.unwrap();
+            connect(&publisher, &ingest).await;
+            let publisher_ssrc = publisher_sender.get_parameters().await.encodings[0].ssrc;
+            *room.publisher_video_ssrc.write().await = Some(publisher_ssrc);
+            *room.publisher_pc.write().await = Some(ingest.clone());
+            let video_sender = egress.add_track(room.video_track.clone()).await.unwrap();
+            let feedback_task = read_viewer_feedback(video_sender.clone(), Some(room.clone()));
+            let (rtp_tx, mut rtp_rx) = mpsc::unbounded_channel();
+            viewer.on_track(Box::new(move |track, _, _| {
+                let tx = rtp_tx.clone();
+                Box::pin(async move {
+                    tokio::spawn(async move {
+                        while let Ok((packet, _)) = track.read_rtp().await {
+                            if tx.send(packet).is_err() { break; }
+                        }
+                    });
+                })
+            }));
+            connect(&egress, &viewer).await;
+            let viewer_ssrc = video_sender.get_parameters().await.encodings[0].ssrc;
+            use webrtc::track::track_local::TrackLocalWriter;
+            let payload = bytes::Bytes::from_static(&[0x65, 1, 2, 3]);
+            room.video_track.write_rtp(&rtp::packet::Packet {
+                header: rtp::header::Header {
+                    version: 2, sequence_number: 100, timestamp: 90000,
+                    marker: true, ..Default::default()
+                },
+                payload: payload.clone(),
+            }).await.unwrap();
+            assert_eq!(rtp_rx.recv().await.unwrap().header.sequence_number, 100);
+            viewer.write_rtcp(&[Box::new(TransportLayerNack {
+                sender_ssrc: 0, media_ssrc: viewer_ssrc,
+                nacks: vec![NackPair { packet_id: 100, lost_packets: 0 }],
+            })]).await.unwrap();
+            let resent = rtp_rx.recv().await.unwrap();
+            assert_eq!(resent.header.sequence_number, 100);
+            assert_eq!(resent.payload, payload);
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let publisher_feedback = tokio::spawn(async move {
+                while let Ok((packets, _)) = publisher_sender.read_rtcp().await {
+                    for packet in packets {
+                        if let Some(pli) = packet.as_any().downcast_ref::<PictureLossIndication>() {
+                            tx.send(pli.media_ssrc).unwrap();
+                        }
+                    }
+                }
+            });
+            viewer.write_rtcp(&[Box::new(PictureLossIndication {
+                sender_ssrc: 0, media_ssrc: viewer_ssrc,
+            })]).await.unwrap();
+            assert_eq!(rx.recv().await.unwrap(), publisher_ssrc);
+            // 同じ配信の同時要求を集約する。
+            room.request_keyframe().await;
+            assert!(tokio::time::timeout(Duration::from_millis(100), rx.recv()).await.is_err());
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            // FIRもOBS側のSSRCに置き換えたPLIとして届ける。
+            viewer.write_rtcp(&[Box::new(FullIntraRequest {
+                sender_ssrc: 0, media_ssrc: 0,
+                fir: vec![FirEntry { ssrc: viewer_ssrc, sequence_number: 1 }],
+            })]).await.unwrap();
+            assert_eq!(rx.recv().await.unwrap(), publisher_ssrc);
+            egress.close().await.unwrap();
+            feedback_task.await.unwrap();
+            publisher.close().await.unwrap();
+            publisher_feedback.await.unwrap();
+            ingest.close().await.unwrap();
+            viewer.close().await.unwrap();
+        }).await.unwrap();
+    }
 }

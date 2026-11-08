@@ -4,6 +4,29 @@ let startedAt = null;
 let elapsedTimer = null;
 let playbackGeneration = 0;
 let leaving = false;
+let streamLive = false;
+let reconnectNeeded = false;
+
+function showPlayButton(reconnect = false) {
+  const button = document.getElementById('play-btn');
+  button.textContent = reconnect ? '再接続する' : '再生する';
+  button.hidden = false;
+  showControls();
+}
+
+async function playVideo(generation = playbackGeneration) {
+  try {
+    // ミュート解除などのクリックからは、awaitより前にplay()を呼ぶ。
+    await document.getElementById('video').play();
+    if (generation !== playbackGeneration || leaving || reconnectNeeded) return;
+    document.getElementById('play-btn').hidden = true;
+    setOverlay('');
+    scheduleHideControls();
+  } catch {
+    if (generation !== playbackGeneration || leaving) return;
+    showPlayButton(reconnectNeeded);
+  }
+}
 
 function setOverlay(text) {
   const overlay = document.getElementById('overlay');
@@ -37,30 +60,38 @@ async function startPlayback(generation) {
     const candidate = await startWhep(streamId, video, (state) => {
       if (generation !== playbackGeneration || leaving) return;
       if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-        setOverlay('接続が切れました。再読み込みしてください。');
+        reconnectNeeded = true;
+        setOverlay('接続が切れました。再接続してください。');
+        showPlayButton(true);
       }
-    });
+    }, () => generation === playbackGeneration && !leaving);
     // 配信終了・ページ離脱・別のloadが先行した場合、遅れて完成した接続を残さない。
     if (generation !== playbackGeneration || leaving) {
       await candidate.stop();
       return;
     }
     session = candidate;
+    if (reconnectNeeded) return;
     setOverlay('');
-    video.play().catch(() => {
-      document.getElementById('play-btn').hidden = false;
-    });
+    await playVideo(generation);
   } catch (e) {
-    if (generation === playbackGeneration && !leaving) setOverlay(`視聴を開始できませんでした: ${e.message}`);
+    if (generation === playbackGeneration && !leaving) {
+      reconnectNeeded = true;
+      setOverlay(`視聴を開始できませんでした: ${e.message}`);
+      showPlayButton(true);
+    }
   }
 }
 
 async function load() {
   if (leaving) return;
   const generation = ++playbackGeneration;
+  reconnectNeeded = false;
+  document.getElementById('play-btn').hidden = true;
   const previous = session;
   session = null;
   if (previous) await previous.stop();
+  if (generation !== playbackGeneration || leaving) return;
   let meta;
   try {
     meta = await api(`/api/streams/${encodeURIComponent(streamId)}`);
@@ -68,21 +99,21 @@ async function load() {
     if (generation !== playbackGeneration || leaving) return;
     document.getElementById('title').textContent = '視聴できません';
     setOverlay(/ログイン/.test(e.message) ? '視聴にはログインが必要です' : e.message);
+    reconnectNeeded = true;
+    showPlayButton(true);
     return;
   }
   if (generation !== playbackGeneration || leaving) return;
   renderMeta(meta);
+  streamLive = meta.is_live;
   if (meta.is_live) await startPlayback(generation);
   else setOverlay('配信は行われていません');
 }
 
 const playBtn = document.getElementById('play-btn');
 playBtn.addEventListener('click', async () => {
-  try {
-    await document.getElementById('video').play();
-    playBtn.hidden = true;
-    setOverlay('');
-  } catch { setOverlay('再生できませんでした。もう一度お試しください。'); }
+  if (reconnectNeeded) await load();
+  else await playVideo();
 });
 
 const muteBtn = document.getElementById('mute-btn');
@@ -103,6 +134,7 @@ muteBtn.addEventListener('click', () => {
     volumeSlider.value = 100;
   }
   updateMuteBtn();
+  if (!video.muted) playVideo();
 });
 
 volumeSlider.addEventListener('input', () => {
@@ -110,15 +142,41 @@ volumeSlider.addEventListener('input', () => {
   video.volume = Number(volumeSlider.value) / 100;
   video.muted = video.volume === 0;
   updateMuteBtn();
+  if (!video.muted && video.paused) playVideo();
 });
+
+// iOS等ではvolumeへの代入が反映されない。UA判定せず実際の対応を確認する。
+function supportsVolumeControl(video) {
+  const original = video.volume;
+  const probe = original === 0.5 ? 1 : 0.5;
+  try {
+    video.volume = probe;
+    return video.volume === probe;
+  } catch {
+    return false;
+  } finally {
+    try { video.volume = original; } catch { /* 端末の音量操作に任せる。 */ }
+  }
+}
 
 document.getElementById('video').addEventListener('loadedmetadata', () => {
   const video = document.getElementById('video');
   muteBtn.hidden = false;
-  volumeSlider.hidden = false;
+  volumeSlider.hidden = !supportsVolumeControl(video);
   volumeSlider.value = Math.round(video.volume * 100);
   updateMuteBtn();
   fullscreenBtn.hidden = !(document.fullscreenEnabled || video.webkitEnterFullscreen);
+});
+
+document.getElementById('video').addEventListener('volumechange', updateMuteBtn);
+document.getElementById('video').addEventListener('pause', () => {
+  if (streamLive && session && !leaving && !reconnectNeeded) showPlayButton();
+});
+document.getElementById('video').addEventListener('playing', () => {
+  if (!streamLive || !session || leaving || reconnectNeeded) return;
+  playBtn.hidden = true;
+  setOverlay('');
+  scheduleHideControls();
 });
 
 const fullscreenBtn = document.getElementById('fullscreen-btn');
@@ -150,6 +208,8 @@ function showControls() {
 
 function scheduleHideControls() {
   clearTimeout(hideControlsTimer);
+  // 自動再生が拒否された時や再接続待ちには、操作の入口を消さない。
+  if (!playBtn.hidden) return;
   hideControlsTimer = setTimeout(() => playerControls.classList.add('is-hidden'), 3000);
 }
 
@@ -172,12 +232,45 @@ window.addEventListener('pageshow', (event) => {
   if (event.persisted) { leaving = false; load(); }
 });
 
+function resumePlayback() {
+  if (leaving || document.visibilityState === 'hidden' || !streamLive) return;
+  const state = session?.pc?.connectionState;
+  if (reconnectNeeded || ['disconnected', 'failed', 'closed'].includes(state)) {
+    load();
+  } else if (session && document.getElementById('video').paused) {
+    playVideo();
+  }
+}
+document.addEventListener('visibilitychange', resumePlayback);
+window.addEventListener('online', resumePlayback);
+
+// 通知用WebSocketだけが再接続した場合、正常な映像接続は維持する。
+async function resyncStream() {
+  if (leaving) return;
+  const generation = playbackGeneration;
+  try {
+    const meta = await api(`/api/streams/${encodeURIComponent(streamId)}`);
+    if (generation !== playbackGeneration || leaving) return;
+    if (session?.pc?.connectionState === 'connected' && !reconnectNeeded
+        && meta.is_live && meta.started_at === startedAt) {
+      renderMeta(meta);
+    } else {
+      await load();
+    }
+  } catch {
+    if (generation === playbackGeneration && !leaving) await load();
+  }
+}
+
 connectEvents((event) => {
-  if (event.type === 'resync') { load(); return; }
+  if (event.type === 'resync') { resyncStream(); return; }
   if (leaving || event.stream_id !== streamId) return;
   if (event.type === 'stream_online') {
     load();
   } else if (event.type === 'stream_offline') {
+    streamLive = false;
+    reconnectNeeded = false;
+    playBtn.hidden = true;
     playbackGeneration++;
     if (session) session.stop();
     session = null;

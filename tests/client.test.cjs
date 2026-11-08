@@ -45,6 +45,12 @@ for (const reconnect of [false, true]) {
   });
 }
 
+class FakeMediaStream {
+  constructor() { this.tracks = []; }
+  getTracks() { return this.tracks; }
+  addTrack(track) { this.tracks.push(track); }
+}
+
 class FakePeer extends EventTarget {
   static instances = [];
   static failAt;
@@ -73,6 +79,7 @@ function whepHarness(failAt) {
   const requests = [];
   const harness = loadScript('whep.js', {
     RTCPeerConnection: FakePeer,
+    MediaStream: FakeMediaStream,
     api: async () => ({ stun_servers: [] }),
     fetch: async (url, options) => {
       requests.push({ url, options });
@@ -209,15 +216,21 @@ function watchHarness() {
   window.location = { pathname: '/watch/test' };
   let onEvent;
   const pending = [];
-  const { context } = loadScript('watch.js', {
+  const document = new EventTarget();
+  document.getElementById = getElement;
+  document.querySelector = () => getElement('controls');
+  document.visibilityState = 'visible';
+  const { context, timers } = loadScript('watch.js', {
     window,
-    document: { getElementById: getElement, querySelector: () => getElement('controls') },
+    document,
     api: async () => ({ title: 'Test', is_live: true, started_at: null, viewer_count: 1 }),
-    startWhep: () => new Promise((resolve) => pending.push(resolve)),
+    startWhep: (id, video, onStateChange, isCurrent) => new Promise((resolve) => {
+      pending.push(Object.assign(resolve, { onStateChange, isCurrent }));
+    }),
     setInterval() {}, clearInterval() {},
     connectEvents(handler) { onEvent = handler; },
   });
-  return { context, getElement, window, pending, event: (ev) => onEvent(ev) };
+  return { context, timers, document, getElement, window, pending, event: (ev) => onEvent(ev) };
 }
 
 for (const stopReason of ['offline', 'pagehide']) {
@@ -286,4 +299,152 @@ test('Dashboard live updates keep unsaved edits while refreshing rotated connect
   assert.equal(field('.js-title-input').value, 'Unsaved draft');
   assert.equal(field('.js-whip-url').textContent, 'https://local.test/api/whip/new');
   assert.equal(field('.js-viewer').textContent, '3人が視聴中');
+});
+
+function dispatchTrack(pc, track, streams = []) {
+  pc.dispatchEvent(Object.assign(new Event('track'), { track, streams }));
+}
+
+test('WHEP combines streamless and separate audio/video tracks without resetting srcObject', async () => {
+  const { context } = whepHarness();
+  let assignments = 0;
+  let srcObject;
+  const video = { get srcObject() { return srcObject; }, set srcObject(value) { srcObject = value; assignments++; } };
+  const session = await context.startWhep('test', video);
+  const audio = { kind: 'audio' };
+  const picture = { kind: 'video' };
+  dispatchTrack(session.pc, picture);
+  dispatchTrack(session.pc, audio, [new FakeMediaStream()]);
+  dispatchTrack(session.pc, audio);
+  assert.deepEqual(video.srcObject.getTracks(), [picture, audio]);
+  assert.equal(assignments, 1);
+  await session.stop();
+  assert.equal(video.srcObject, null);
+  dispatchTrack(session.pc, { kind: 'video' });
+  assert.equal(video.srcObject, null);
+});
+
+test('A stale WHEP track or stop cannot replace or clear the current video', async () => {
+  const { context } = whepHarness();
+  const video = {};
+  let current = true;
+  const old = await context.startWhep('test', video, null, () => current);
+  dispatchTrack(old.pc, { kind: 'video' });
+  current = false;
+  const latest = await context.startWhep('test', video);
+  dispatchTrack(latest.pc, { kind: 'video' });
+  const media = video.srcObject;
+  dispatchTrack(old.pc, { kind: 'audio' });
+  assert.equal(video.srcObject, media);
+  await old.stop();
+  assert.equal(video.srcObject, media);
+  await latest.stop();
+});
+
+async function connectedWatch(harness = watchHarness()) {
+  await new Promise(setImmediate);
+  const connection = { pc: { connectionState: 'connected' }, stopCount: 0,
+    async stop() { this.stopCount++; } };
+  harness.pending[0](connection);
+  await new Promise(setImmediate);
+  return { ...harness, connection };
+}
+
+test('Autoplay rejection keeps the play action visible and a user tap can resume', async () => {
+  const harness = watchHarness();
+  const video = harness.getElement('video');
+  video.play = async () => { throw new Error('NotAllowedError'); };
+  await connectedWatch(harness);
+  assert.equal(harness.getElement('play-btn').hidden, false);
+  assert.equal(harness.timers.size, 0);
+  video.play = async () => {};
+  harness.getElement('play-btn').dispatchEvent(new Event('click'));
+  await new Promise(setImmediate);
+  assert.equal(harness.getElement('play-btn').hidden, true);
+  assert.equal(harness.timers.size, 1);
+});
+
+test('Unmuting invokes play synchronously during the user gesture', async () => {
+  const harness = await connectedWatch();
+  const video = harness.getElement('video');
+  let played = 0;
+  video.play = () => { played++; return Promise.resolve(); };
+  harness.getElement('mute-btn').dispatchEvent(new Event('click'));
+  assert.equal(video.muted, false);
+  assert.equal(played, 1);
+  await new Promise(setImmediate);
+});
+
+for (const writableVolume of [false, true]) {
+  test(`Volume controls reflect device support (writable=${writableVolume})`, async () => {
+    const harness = await connectedWatch();
+    const video = harness.getElement('video');
+    let volume = 0.7;
+    Object.defineProperty(video, 'volume', {
+      get: () => volume,
+      set: (value) => { if (writableVolume) volume = value; },
+    });
+    video.dispatchEvent(new Event('loadedmetadata'));
+    assert.equal(harness.getElement('volume-slider').hidden, !writableVolume);
+    assert.equal(volume, 0.7);
+    assert.equal(harness.getElement('mute-btn').hidden, false);
+  });
+}
+
+test('Returning from the background resumes paused media without replacing a healthy connection', async () => {
+  const harness = await connectedWatch();
+  const video = harness.getElement('video');
+  video.paused = true;
+  let played = 0;
+  video.play = () => { played++; return Promise.resolve(); };
+  harness.document.visibilityState = 'hidden';
+  harness.document.dispatchEvent(new Event('visibilitychange'));
+  assert.equal(played, 0);
+  harness.document.visibilityState = 'visible';
+  harness.document.dispatchEvent(new Event('visibilitychange'));
+  assert.equal(played, 1);
+  assert.equal(harness.pending.length, 1);
+  await new Promise(setImmediate);
+});
+
+for (const trigger of ['visibilitychange', 'online', 'click']) {
+  test(`Disconnected playback can reconnect after ${trigger}`, async () => {
+    const harness = await connectedWatch();
+    harness.connection.pc.connectionState = 'failed';
+    harness.pending[0].onStateChange('failed');
+    assert.equal(harness.getElement('play-btn').hidden, false);
+    assert.equal(harness.getElement('play-btn').textContent, '再接続する');
+    assert.equal(harness.timers.size, 0);
+    if (trigger === 'click') harness.getElement('play-btn').dispatchEvent(new Event('click'));
+    else if (trigger === 'online') harness.window.dispatchEvent(new Event('online'));
+    else harness.document.dispatchEvent(new Event('visibilitychange'));
+    await new Promise(setImmediate);
+    assert.equal(harness.connection.stopCount, 1);
+    assert.equal(harness.pending.length, 2);
+    harness.pending[1]({ pc: { connectionState: 'connected' }, async stop() {} });
+    await new Promise(setImmediate);
+    assert.equal(harness.getElement('play-btn').hidden, true);
+    assert.equal(harness.getElement('overlay').textContent, '');
+  });
+}
+
+test('WebSocket resync retains healthy playback for the same broadcast', async () => {
+  const harness = await connectedWatch();
+  harness.event({ type: 'resync' });
+  await new Promise(setImmediate);
+  assert.equal(harness.connection.stopCount, 0);
+  assert.equal(harness.pending.length, 1);
+});
+
+test('A late autoplay rejection cannot show play controls after the broadcast ends', async () => {
+  const harness = watchHarness();
+  let rejectPlay;
+  harness.getElement('video').play = () => new Promise((_, reject) => { rejectPlay = reject; });
+  await connectedWatch(harness);
+  harness.event({ type: 'stream_offline', stream_id: 'test' });
+  rejectPlay(new Error('NotAllowedError'));
+  await new Promise(setImmediate);
+  assert.equal(harness.getElement('play-btn').hidden, true);
+  assert.equal(harness.getElement('overlay').textContent, '配信は終了しました');
+  assert.equal(harness.pending[0].isCurrent(), false);
 });

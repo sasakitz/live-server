@@ -109,6 +109,9 @@ async fn publish(
             let room = room.clone();
             Box::pin(async move {
                 let is_video = track.kind() == RTPCodecType::Video;
+                if is_video {
+                    *room.publisher_video_ssrc.write().await = Some(track.ssrc());
+                }
                 let local_track = if is_video {
                     room.video_track.clone()
                 } else {

@@ -3,9 +3,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 use crate::sfu::engine::{h264_capability, opus_capability};
@@ -24,6 +26,8 @@ pub struct Room {
     pub audio_track: Arc<TrackLocalStaticRTP>,
     pub viewers: RwLock<HashMap<ViewerId, Arc<RTCPeerConnection>>>,
     pub publisher_pc: RwLock<Option<Arc<RTCPeerConnection>>>,
+    pub publisher_video_ssrc: RwLock<Option<u32>>,
+    last_keyframe_request: Mutex<Option<Instant>>,
     /// 配信一覧向けの直近サムネイル(JPEG)。`sfu::thumbnail`が定期的に更新する。
     pub thumbnail: RwLock<Option<Bytes>>,
     viewer_count: AtomicUsize,
@@ -51,6 +55,8 @@ impl Room {
             audio_track,
             viewers: RwLock::new(HashMap::new()),
             publisher_pc: RwLock::new(None),
+            publisher_video_ssrc: RwLock::new(None),
+            last_keyframe_request: Mutex::new(None),
             thumbnail: RwLock::new(None),
             viewer_count: AtomicUsize::new(0),
             peak_viewers: AtomicUsize::new(0),
@@ -94,6 +100,26 @@ impl Room {
 
     pub fn peak_viewers(&self) -> usize {
         self.peak_viewers.load(Ordering::SeqCst)
+    }
+
+    /// OBS側の映像SSRCを指定して復旧を要求する。複数視聴者からの要求は集約する。
+    pub async fn request_keyframe(&self) {
+        let Some(media_ssrc) = *self.publisher_video_ssrc.read().await else { return };
+        let Some(pc) = self.publisher_pc.read().await.clone() else { return };
+        {
+            let mut last = self.last_keyframe_request.lock().await;
+            let now = Instant::now();
+            if last.is_some_and(|at| now.duration_since(at) < Duration::from_millis(500)) {
+                return;
+            }
+            *last = Some(now);
+        }
+        if let Err(error) = pc.write_rtcp(&[Box::new(PictureLossIndication {
+            sender_ssrc: 0,
+            media_ssrc,
+        })]).await {
+            tracing::trace!(?error, "キーフレーム要求を送信できませんでした");
+        }
     }
 
     /// 配信終了時に全視聴者PeerConnectionを閉じる。

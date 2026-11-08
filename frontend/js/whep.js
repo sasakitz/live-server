@@ -26,9 +26,10 @@ function waitIceGatheringComplete(pc) {
  * @param {string} streamId
  * @param {HTMLVideoElement} videoEl
  * @param {(state: RTCPeerConnectionState) => void} [onStateChange]
+ * @param {() => boolean} [isCurrent] この接続が現在の視聴操作に属するか。
  * @returns {Promise<{ pc: RTCPeerConnection, stop: () => Promise<void> }>}
  */
-async function startWhep(streamId, videoEl, onStateChange) {
+async function startWhep(streamId, videoEl, onStateChange, isCurrent = () => true) {
   let stunServers = [];
   try {
     const cfg = await api('/api/client-config');
@@ -40,6 +41,8 @@ async function startWhep(streamId, videoEl, onStateChange) {
   const pc = new RTCPeerConnection({
     iceServers: stunServers.map((url) => ({ urls: url })),
   });
+  // streamsが空、または音声と映像が別streamで届いても同じvideoで再生する。
+  const media = new MediaStream();
 
   let resourceUrl;
   let stopped = false;
@@ -47,6 +50,7 @@ async function startWhep(streamId, videoEl, onStateChange) {
     if (stopped) return;
     stopped = true;
     pc.close();
+    if (videoEl.srcObject === media) videoEl.srcObject = null;
     if (resourceUrl) {
       try {
         await fetch(resourceUrl, { method: 'DELETE', credentials: 'same-origin', keepalive: true });
@@ -58,9 +62,9 @@ async function startWhep(streamId, videoEl, onStateChange) {
 
   try {
     pc.addEventListener('track', (event) => {
-      if (videoEl.srcObject !== event.streams[0]) {
-        videoEl.srcObject = event.streams[0];
-      }
+      if (stopped || !isCurrent()) return;
+      if (!media.getTracks().includes(event.track)) media.addTrack(event.track);
+      if (videoEl.srcObject !== media) videoEl.srcObject = media;
     });
     if (onStateChange) {
       pc.addEventListener('connectionstatechange', () => onStateChange(pc.connectionState));
