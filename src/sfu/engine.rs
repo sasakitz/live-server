@@ -12,6 +12,7 @@ use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, API};
+use webrtc::dtls_transport::dtls_role::DTLSRole;
 use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::interceptor::registry::Registry;
@@ -116,6 +117,11 @@ pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
         .context("インターセプタの登録に失敗しました")?;
 
     let mut setting_engine = SettingEngine::default();
+    // 配信サーバがDTLSの接続を受け、OBS/ブラウザがClientHelloを送る。
+    // 既定のClient役ではwebrtc-dtlsが相手のIPv6アドレスをSNIに入れ、
+    // libdatachannelのGnuTLSバックエンドに拒否されるため、Server役を明示する。
+    setting_engine.set_answering_dtls_role(DTLSRole::Server)
+        .context("DTLSサーバロールの設定に失敗しました")?;
     let ephemeral = EphemeralUDP::new(cfg.udp_port_min, cfg.udp_port_max)
         .context("UDPポート範囲の設定に失敗しました(min > maxになっていないか確認)")?;
     setting_engine.set_udp_network(UDPNetwork::Ephemeral(ephemeral));
@@ -145,6 +151,8 @@ pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+    use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 
     fn config(public_ips: &[&str], bind_ips: &[&str]) -> WebRtcConfig {
         WebRtcConfig {
@@ -173,5 +181,29 @@ mod tests {
         assert_eq!(ips.len(), 1);
         assert!(ips.contains(&"2001:db8::10".parse::<IpAddr>().unwrap()));
         build_api(&cfg).unwrap();
+    }
+
+    #[tokio::test]
+    async fn answers_accept_dtls_connections_from_publishers_and_viewers() {
+        let client_api = APIBuilder::new()
+            .with_media_engine(build_media_engine().unwrap())
+            .build();
+        let server_api = build_api(&config(&["2001:db8::10"], &[])).unwrap();
+        for direction in [RTCRtpTransceiverDirection::Sendonly, RTCRtpTransceiverDirection::Recvonly] {
+            let client = client_api.new_peer_connection(Default::default()).await.unwrap();
+            client.add_transceiver_from_kind(RTPCodecType::Video, Some(RTCRtpTransceiverInit {
+                direction,
+                send_encodings: vec![],
+            })).await.unwrap();
+            let offer = client.create_offer(None).await.unwrap();
+            assert!(offer.sdp.contains("a=setup:actpass"));
+            let server = server_api.new_peer_connection(Default::default()).await.unwrap();
+            server.set_remote_description(offer).await.unwrap();
+            let answer = server.create_answer(None).await.unwrap();
+            assert!(answer.sdp.contains("a=setup:passive"));
+            assert!(!answer.sdp.contains("a=setup:active"));
+            server.close().await.unwrap();
+            client.close().await.unwrap();
+        }
     }
 }

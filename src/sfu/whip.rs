@@ -199,7 +199,8 @@ async fn terminate(Path(session_id): Path<Uuid>, State(state): State<AppState>) 
     if let Some(stream_id) = stream_id {
         lifecycle::stop_session(&state, &stream_id, session_id).await?;
     }
-    Ok(StatusCode::NO_CONTENT)
+    // OBSのWHIP実装はDELETE成功を200で判定する。
+    Ok(StatusCode::OK)
 }
 
 pub fn router() -> Router<AppState> {
@@ -217,12 +218,12 @@ mod tests {
         let state = crate::state::test_state().await;
         let old = Arc::new(Room::new("test".into()));
         lifecycle::register_room(&state, "secret", old.clone()).await.unwrap();
-        terminate(Path(old.session_id), State(state.clone())).await.unwrap();
+        assert_eq!(terminate(Path(old.session_id), State(state.clone())).await.unwrap(), StatusCode::OK);
         let new = Arc::new(Room::new("test".into()));
         lifecycle::register_room(&state, "secret", new.clone()).await.unwrap();
-        terminate(Path(old.session_id), State(state.clone())).await.unwrap();
+        assert_eq!(terminate(Path(old.session_id), State(state.clone())).await.unwrap(), StatusCode::OK);
         assert_eq!(state.rooms.read().await["test"].session_id, new.session_id);
-        terminate(Path(new.session_id), State(state.clone())).await.unwrap();
+        assert_eq!(terminate(Path(new.session_id), State(state.clone())).await.unwrap(), StatusCode::OK);
         assert!(state.rooms.read().await.is_empty());
     }
 }
