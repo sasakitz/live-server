@@ -23,6 +23,15 @@ use crate::state::AppState;
 
 const SDP_MIME: &str = "application/sdp";
 
+/// extmapとTWCC連番は接続ごとに異なるため、配信元の値を視聴者に流用しない。
+/// 視聴者向けの拡張はTrackLocal/interceptorが合意済みのIDで付与する。
+pub(super) fn prepare_relay_packet(packet: &mut rtp::packet::Packet) {
+    packet.header.extension = false;
+    packet.header.extension_profile = 0;
+    packet.header.extensions.clear();
+    packet.header.extensions_padding = 0;
+}
+
 /// `Authorization: Bearer <token>` からstream_keyを取り出す。OBSの実装によっては
 /// Bearer Token欄が空だと接続に失敗する個体があるため、URLパスとBearer Tokenの
 /// どちらでもstream_keyを受け付けられるようにしている(Bearerを優先)。
@@ -125,7 +134,8 @@ async fn publish(
                     let mut capturer = is_video.then(ThumbnailCapturer::new);
                     loop {
                         match track.read_rtp().await {
-                            Ok((packet, _attributes)) => {
+                            Ok((mut packet, _attributes)) => {
+                                prepare_relay_packet(&mut packet);
                                 // 1視聴者の送信失敗で、全視聴者への中継を終了させない。
                                 if let Err(error) = local_track.write_rtp(&packet).await {
                                     tracing::trace!(?error, "RTP送信の一部が失敗しました");

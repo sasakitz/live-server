@@ -448,3 +448,63 @@ test('A late autoplay rejection cannot show play controls after the broadcast en
   assert.equal(harness.getElement('overlay').textContent, '配信は終了しました');
   assert.equal(harness.pending[0].isCurrent(), false);
 });
+
+test('Playback stats calculate interval rates and buffer delay without exposing network addresses', async () => {
+  const { context } = loadScript('playback-stats.js');
+  const before = new Map([['video', {
+    timestamp: 1000, bytesReceived: 1000, framesDecoded: 30,
+    jitterBufferDelay: 2, jitterBufferEmittedCount: 30,
+  }]]);
+  const reports = new Map([
+    ['video', { id: 'video', type: 'inbound-rtp', kind: 'video', timestamp: 3000,
+      bytesReceived: 1501000, framesDecoded: 90, packetsLost: 10, jitter: 0.012,
+      jitterBufferDelay: 8, jitterBufferEmittedCount: 90,
+      frameWidth: 1920, frameHeight: 1080, codecId: 'codec', freezeCount: 3,
+      totalFreezesDuration: 1.5, framesDropped: 2, nackCount: 5, pliCount: 1 }],
+    ['codec', { id: 'codec', type: 'codec', mimeType: 'video/H264' }],
+    ['transport', { type: 'transport', selectedCandidatePairId: 'pair' }],
+    ['pair', { type: 'candidate-pair', remoteCandidateId: 'remote', currentRoundTripTime: 0.05 }],
+    ['remote', { protocol: 'udp', candidateType: 'host', address: '203.0.113.1' }],
+  ]);
+  const result = await context.readPlaybackStats({
+    connectionState: 'connected', iceConnectionState: 'connected', getStats: async () => reports,
+  }, before);
+  assert.match(result.text, /6000 kbps/);
+  assert.match(result.text, /30\.0 fps/);
+  assert.match(result.text, /100\.0 ms/);
+  assert.match(result.text, /1920 × 1080/);
+  assert.match(result.text, /映像停止: 3回/);
+  assert.match(result.text, /50\.0 ms/);
+  assert.doesNotMatch(result.text, /203\.0\.113\.1|NaN|Infinity/);
+  assert.equal(result.samples.get('video'), reports.get('video'));
+});
+
+test('Playback stats handle Safari missing fields, first samples and replaced RTP streams', async () => {
+  const { context } = loadScript('playback-stats.js');
+  const reports = new Map([
+    ['audio', { id: 'audio', type: 'inbound-rtp', mediaType: 'audio', timestamp: 2000, bytesReceived: 50 }],
+    ['video', { id: 'video', type: 'inbound-rtp', kind: 'video', timestamp: 2000, bytesReceived: 10, framesDecoded: 1 }],
+  ]);
+  const pc = { connectionState: 'connected', getStats: async () => reports };
+  const first = await context.readPlaybackStats(pc);
+  assert.match(first.text, /音声/);
+  assert.match(first.text, /受信: — kbps/);
+  assert.doesNotMatch(first.text, /undefined|NaN|Infinity/);
+  const result = await context.readPlaybackStats(pc, new Map([['video', {
+    timestamp: 1000, bytesReceived: 999, framesDecoded: 99,
+  }]]));
+  assert.doesNotMatch(result.text, /-\d|undefined|NaN|Infinity/);
+});
+
+test('Late playback stats cannot overwrite a replacement connection or a departed page', async () => {
+  const harness = await connectedWatch();
+  const details = harness.getElement('playback-info');
+  details.open = true;
+  let resolveStats;
+  harness.context.readPlaybackStats = () => new Promise((resolve) => { resolveStats = resolve; });
+  const reading = harness.context.updatePlaybackStats();
+  harness.window.dispatchEvent(new Event('pagehide'));
+  resolveStats({ text: 'stale stats', samples: new Map() });
+  await reading;
+  assert.notEqual(harness.getElement('playback-stats').textContent, 'stale stats');
+});

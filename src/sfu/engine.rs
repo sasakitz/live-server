@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use anyhow::{Context, Result};
-use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::api::interceptor_registry::{configure_twcc_sender_only, register_default_interceptors};
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, API};
@@ -108,13 +108,20 @@ fn candidate_ips(cfg: &WebRtcConfig) -> HashSet<IpAddr> {
     cfg.public_ips.iter().chain(&cfg.bind_ips).copied().collect()
 }
 
+/// 再送も含め、接続ごとのTWCC送信連番を付ける。
+pub(super) fn register_interceptors(media_engine: &mut MediaEngine) -> Result<Registry> {
+    // 既定ではTWCC受信側のみ。視聴者向けには接続ごとの送信連番も生成する。
+    // NACK responderの内側になるよう先に登録し、再送時も新しい連番を付ける。
+    let registry = configure_twcc_sender_only(Registry::new(), media_engine)
+        .context("TWCC送信インターセプタの登録に失敗しました")?;
+    register_default_interceptors(registry, media_engine)
+        .context("インターセプタの登録に失敗しました")
+}
+
 /// SFU全体で共有する webrtc `API` を構築する。
 pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
     let mut media_engine = build_media_engine()?;
-
-    let mut registry = Registry::new();
-    registry = register_default_interceptors(registry, &mut media_engine)
-        .context("インターセプタの登録に失敗しました")?;
+    let registry = register_interceptors(&mut media_engine)?;
 
     let mut setting_engine = SettingEngine::default();
     // 配信サーバがDTLSの接続を受け、OBS/ブラウザがClientHelloを送る。

@@ -187,9 +187,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use tokio::sync::mpsc;
-    use webrtc::api::{APIBuilder, interceptor_registry::register_default_interceptors,
+    use webrtc::api::{APIBuilder,
         media_engine::MediaEngine, setting_engine::SettingEngine};
-    use webrtc::interceptor::registry::Registry;
     use webrtc::rtcp::payload_feedbacks::full_intra_request::FirEntry;
     use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
     use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTPCodecType};
@@ -203,7 +202,7 @@ mod tests {
             payload_type: 102,
             ..Default::default()
         }, RTPCodecType::Video).unwrap();
-        let registry = register_default_interceptors(Registry::new(), &mut media).unwrap();
+        let registry = crate::sfu::engine::register_interceptors(&mut media).unwrap();
         let mut settings = SettingEngine::default();
         settings.set_include_loopback_candidate(true);
         // 再送を観測するテスト用。既に受信済みのパケットを再送要求するため。
@@ -264,14 +263,26 @@ mod tests {
             let viewer_ssrc = video_sender.get_parameters().await.encodings[0].ssrc;
             use webrtc::track::track_local::TrackLocalWriter;
             let payload = bytes::Bytes::from_static(&[0x65, 1, 2, 3]);
-            room.video_track.write_rtp(&rtp::packet::Packet {
+            let mut packet = rtp::packet::Packet {
                 header: rtp::header::Header {
                     version: 2, sequence_number: 100, timestamp: 90000,
                     marker: true, ..Default::default()
                 },
                 payload: payload.clone(),
-            }).await.unwrap();
-            assert_eq!(rtp_rx.recv().await.unwrap().header.sequence_number, 100);
+            };
+            // OBS側の拡張番号と値をそのまま転送してはいけない。
+            packet.header.set_extension(7, bytes::Bytes::from_static(&[0xfe, 0xdc])).unwrap();
+            crate::sfu::whip::prepare_relay_packet(&mut packet);
+            room.video_track.write_rtp(&packet).await.unwrap();
+            let received = rtp_rx.recv().await.unwrap();
+            assert_eq!(received.header.sequence_number, 100);
+            assert!(received.header.get_extension(7).is_none());
+            let params = video_sender.get_parameters().await;
+            let twcc_id = params.rtp_parameters.header_extensions.iter()
+                .find(|ext| ext.uri.ends_with("transport-wide-cc-extensions-01")).unwrap().id as u8;
+            let first_twcc = received.header.get_extension(twcc_id).unwrap();
+            assert_eq!(first_twcc.len(), 2);
+            assert_ne!(first_twcc.as_ref(), &[0xfe, 0xdc]);
             viewer.write_rtcp(&[Box::new(TransportLayerNack {
                 sender_ssrc: 0, media_ssrc: viewer_ssrc,
                 nacks: vec![NackPair { packet_id: 100, lost_packets: 0 }],
@@ -279,6 +290,9 @@ mod tests {
             let resent = rtp_rx.recv().await.unwrap();
             assert_eq!(resent.header.sequence_number, 100);
             assert_eq!(resent.payload, payload);
+            let next_twcc = resent.header.get_extension(twcc_id).unwrap();
+            assert_eq!(u16::from_be_bytes([next_twcc[0], next_twcc[1]]),
+                u16::from_be_bytes([first_twcc[0], first_twcc[1]]).wrapping_add(1));
             let (tx, mut rx) = mpsc::unbounded_channel();
             let publisher_feedback = tokio::spawn(async move {
                 while let Ok((packets, _)) = publisher_sender.read_rtcp().await {

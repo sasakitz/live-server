@@ -244,6 +244,44 @@ function resumePlayback() {
 document.addEventListener('visibilitychange', resumePlayback);
 window.addEventListener('online', resumePlayback);
 
+const playbackInfo = document.getElementById('playback-info');
+let statsTimer = null;
+let statsSession = null;
+let statsSamples = new Map();
+let statsReading = false;
+
+async function updatePlaybackStats() {
+  if (!playbackInfo.open || leaving || document.visibilityState === 'hidden' || statsReading) return;
+  const output = document.getElementById('playback-stats');
+  const current = session;
+  if (!current) { output.textContent = '視聴接続を待っています。'; return; }
+  if (statsSession !== current) { statsSession = current; statsSamples = new Map(); }
+  statsReading = true;
+  try {
+    const result = await readPlaybackStats(current.pc, statsSamples);
+    if (session !== current || leaving || !playbackInfo.open) return;
+    statsSamples = result.samples;
+    output.textContent = result.text;
+  } catch {
+    if (session === current && !leaving) output.textContent = 'この端末では再生情報を取得できませんでした。';
+  } finally {
+    statsReading = false;
+  }
+}
+
+function schedulePlaybackStats() {
+  clearInterval(statsTimer);
+  statsTimer = null;
+  statsSamples = new Map();
+  if (!playbackInfo.open || leaving || document.visibilityState === 'hidden') return;
+  updatePlaybackStats();
+  statsTimer = setInterval(updatePlaybackStats, 2000);
+}
+playbackInfo.addEventListener('toggle', schedulePlaybackStats);
+document.addEventListener('visibilitychange', schedulePlaybackStats);
+window.addEventListener('pagehide', () => { clearInterval(statsTimer); statsTimer = null; });
+window.addEventListener('pageshow', schedulePlaybackStats);
+
 // 通知用WebSocketだけが再接続した場合、正常な映像接続は維持する。
 async function resyncStream() {
   if (leaving) return;
