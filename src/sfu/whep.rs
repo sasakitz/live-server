@@ -87,11 +87,9 @@ async fn watch(
     {
         let state = state.clone();
         let room = room.clone();
-        let stream_id = stream_id.clone();
         pc.on_peer_connection_state_change(Box::new(move |pc_state| {
             let state = state.clone();
             let room = room.clone();
-            let stream_id = stream_id.clone();
             Box::pin(async move {
                 if matches!(
                     pc_state,
