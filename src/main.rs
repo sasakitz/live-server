@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
     tracing::info!(path = %config_path.display(), "設定を読み込みました");
 
     let db = db::init_pool(&config.db.url).await?;
+    db::reset_live_streams(&db).await?;
 
     auth::bootstrap_admins(&db, &config.auth.admin_bootstrap).await?;
 
@@ -69,6 +70,7 @@ async fn main() -> Result<()> {
 
     let state = AppState {
         db: db.clone(),
+        shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         config: config.clone(),
         http: reqwest::Client::new(),
         webrtc_api,
@@ -107,13 +109,24 @@ async fn main() -> Result<()> {
         .layer(session_layer)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind(config.server.bind).await?;
     tracing::info!(addr = %config.server.bind, "listening");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            state.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+            // 長寿命のWSも閉じないと、Axumのgraceful shutdownが終了しない。
+            state.publish(crate::state::AppEvent::Shutdown);
+            let ids: Vec<_> = state.rooms.read().await.keys().cloned().collect();
+            for id in ids {
+                if let Err(error) = sfu::lifecycle::stop_stream(&state, &id).await {
+                    tracing::error!(?error, stream_id = id, "終了時の配信停止に失敗しました");
+                }
+            }
+        })
         .await?;
 
     Ok(())
@@ -142,3 +155,6 @@ async fn shutdown_signal() {
     }
     tracing::info!("シャットダウンシグナルを受信しました");
 }
+
+#[cfg(test)]
+mod tests;

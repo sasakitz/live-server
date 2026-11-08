@@ -14,13 +14,14 @@ secure_cookies = true
 # ルータのグローバルIP(+ポート開放/DMZ設定)を指定する。
 # IPv4/IPv6のデュアルスタックであれば両方列挙できる:
 #   public_ips = ["203.0.113.10", "2001:db8::1"]
-public_ips = ["203.0.113.10"]
-# 自宅サーバ等でpublic_ipsがルータ経由のグローバルIP(NICには存在しない)の場合、
-# ここにサーバ機自身のLAN側IP(`ip -4 addr show`で確認できるアドレス)を指定すること。
-# 指定しないとICE候補が0件になり、OBSからは「配信中」に見えても実際には
-# 映像/音声が一切届かない(ビットレート0)状態になる。
-# クラウドVM等、public_ipsがNICに直接付いている場合は指定不要。
+public_ips = ["203.0.113.10", "2001:db8::10"]
+# public_ipsに加えて収集するローカルNICアドレス(任意)。
+# IPv4 NAT配下ではサーバ機自身のLAN側IPv4を指定する。
+# public_ipsのNIC直結IPv6は、bind_ipsに書かなくても収集される。
+# 例: public_ips = ["203.0.113.10", "2001:db8::10"] のIPv4 NAT + IPv6環境では:
 #   bind_ips = ["192.168.1.7"]
+# アドレス確認: ip -4 addr show / ip -6 addr show scope global
+# UDPポート範囲をIPv4/IPv6の両方で許可し、必要なICMPv6も通すこと。
 udp_port_min = 5000
 udp_port_max = 5200
 stun_servers = ["stun:stun.l.google.com:19302"]

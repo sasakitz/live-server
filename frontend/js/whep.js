@@ -7,15 +7,17 @@
 function waitIceGatheringComplete(pc) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
+    function finish() {
+      clearTimeout(timer);
+      pc.removeEventListener('icegatheringstatechange', check);
+      resolve();
+    }
     function check() {
-      if (pc.iceGatheringState === 'complete') {
-        pc.removeEventListener('icegatheringstatechange', check);
-        resolve();
-      }
+      if (pc.iceGatheringState === 'complete') finish();
     }
     pc.addEventListener('icegatheringstatechange', check);
     // ICE候補収集が長引く場合でも視聴開始できるよう、タイムアウトで打ち切る。
-    setTimeout(resolve, 4000);
+    const timer = setTimeout(finish, 4000);
   });
 }
 
@@ -39,37 +41,7 @@ async function startWhep(streamId, videoEl, onStateChange) {
     iceServers: stunServers.map((url) => ({ urls: url })),
   });
 
-  pc.addEventListener('track', (event) => {
-    if (videoEl.srcObject !== event.streams[0]) {
-      videoEl.srcObject = event.streams[0];
-    }
-  });
-  if (onStateChange) {
-    pc.addEventListener('connectionstatechange', () => onStateChange(pc.connectionState));
-  }
-
-  pc.addTransceiver('video', { direction: 'recvonly' });
-  pc.addTransceiver('audio', { direction: 'recvonly' });
-
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  await waitIceGatheringComplete(pc);
-
-  const res = await fetch(`/api/whep/${encodeURIComponent(streamId)}`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/sdp' },
-    body: pc.localDescription.sdp,
-  });
-  if (!res.ok) {
-    pc.close();
-    const text = await res.text().catch(() => '');
-    throw new Error(text || `視聴セッションの開始に失敗しました (${res.status})`);
-  }
-  const answerSdp = await res.text();
-  const resourceUrl = res.headers.get('Location');
-  await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-
+  let resourceUrl;
   let stopped = false;
   const stop = async () => {
     if (stopped) return;
@@ -83,6 +55,41 @@ async function startWhep(streamId, videoEl, onStateChange) {
       }
     }
   };
+
+  try {
+    pc.addEventListener('track', (event) => {
+      if (videoEl.srcObject !== event.streams[0]) {
+        videoEl.srcObject = event.streams[0];
+      }
+    });
+    if (onStateChange) {
+      pc.addEventListener('connectionstatechange', () => onStateChange(pc.connectionState));
+    }
+
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitIceGatheringComplete(pc);
+
+    const res = await fetch(`/api/whep/${encodeURIComponent(streamId)}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/sdp' },
+      body: pc.localDescription.sdp,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(text || `視聴セッションの開始に失敗しました (${res.status})`);
+    }
+    resourceUrl = res.headers.get('Location');
+    const answerSdp = await res.text();
+    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+  } catch (error) {
+    await stop();
+    throw error;
+  }
 
   return { pc, stop };
 }

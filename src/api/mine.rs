@@ -157,6 +157,7 @@ async fn update_mine(
         return Err(AppError::bad_request("タイトルは空にできません"));
     }
 
+    let rooms_guard = state.rooms.read().await;
     sqlx::query("UPDATE streams SET title = ?, description = ?, public = ? WHERE id = ?")
         .bind(&title)
         .bind(&description)
@@ -164,6 +165,9 @@ async fn update_mine(
         .bind(&stream_id)
         .execute(&state.db)
         .await?;
+
+    if let Some(room) = rooms_guard.get(&stream_id) { room.set_public(public); }
+    drop(rooms_guard);
 
     let updated = sqlx::query_as::<_, Stream>("SELECT * FROM streams WHERE id = ?")
         .bind(&stream_id)
@@ -179,11 +183,7 @@ async fn delete_mine(
     Path(stream_id): Path<String>,
 ) -> AppResult<StatusCode> {
     fetch_owned(&state, &user, &stream_id).await?;
-    lifecycle::stop_stream(&state, &stream_id, true).await?;
-    sqlx::query("DELETE FROM streams WHERE id = ?")
-        .bind(&stream_id)
-        .execute(&state.db)
-        .await?;
+    lifecycle::delete_stream(&state, &stream_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -193,19 +193,8 @@ async fn regenerate_key(
     CurrentUser(user): CurrentUser,
     Path(stream_id): Path<String>,
 ) -> AppResult<Json<MyStream>> {
-    let stream = fetch_owned(&state, &user, &stream_id).await?;
-    if stream.is_live {
-        return Err(AppError::conflict(
-            "配信中はstream_keyを再発行できません。先に配信を停止してください",
-        ));
-    }
-
-    let new_key = generate_stream_key();
-    sqlx::query("UPDATE streams SET stream_key = ? WHERE id = ?")
-        .bind(&new_key)
-        .bind(&stream_id)
-        .execute(&state.db)
-        .await?;
+    fetch_owned(&state, &user, &stream_id).await?;
+    lifecycle::regenerate_key(&state, &stream_id).await?;
 
     let updated = sqlx::query_as::<_, Stream>("SELECT * FROM streams WHERE id = ?")
         .bind(&stream_id)
@@ -221,7 +210,7 @@ async fn stop_mine(
     Path(stream_id): Path<String>,
 ) -> AppResult<Json<MyStream>> {
     let stream = fetch_owned(&state, &user, &stream_id).await?;
-    lifecycle::stop_stream(&state, &stream.id, true).await?;
+    lifecycle::stop_stream(&state, &stream.id).await?;
     let updated = sqlx::query_as::<_, Stream>("SELECT * FROM streams WHERE id = ?")
         .bind(&stream_id)
         .fetch_one(&state.db)

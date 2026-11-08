@@ -11,12 +11,12 @@ use axum::Router;
 use uuid::Uuid;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::track::track_local::TrackLocal;
 
 use crate::auth::CurrentUser;
 use crate::error::{AppError, AppResult};
 use crate::models::Stream;
+use crate::sfu::negotiate;
 use crate::state::{AppEvent, AppState};
 
 const SDP_MIME: &str = "application/sdp";
@@ -57,6 +57,7 @@ async fn watch(
             .new_peer_connection(RTCConfiguration::default())
             .await?,
     );
+    let pending = crate::sfu::NegotiatingPeer::new(pc.clone());
 
     // set_remote_descriptionより前にadd_trackでRoomの共有トラックを紐付けたsendrecv
     // transceiverを用意しておく。sendrecvはブラウザのrecvonlyオファーとのマッチングで
@@ -65,30 +66,23 @@ async fn watch(
     // 初回のトラックを設定しようとすると、そのsenderのtrack_encodingsが空のままのため
     // "new track must have the same envelope as previous"エラーになる
     // (replace_trackは「既存トラックの差し替え」専用で、初回設定には使えない)。
-    pc.add_track(room.video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-        .await?;
-    pc.add_track(room.audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-        .await?;
-
-    let offer = RTCSessionDescription::offer(offer_sdp)?;
-    pc.set_remote_description(offer).await?;
-
-    let answer = pc.create_answer(None).await?;
-    let mut gather_complete = pc.gathering_complete_promise().await;
-    pc.set_local_description(answer).await?;
-    let _ = gather_complete.recv().await;
-
-    let local_desc = pc
-        .local_description()
-        .await
-        .ok_or_else(|| AppError::from(anyhow::anyhow!("local descriptionの取得に失敗しました")))?;
+    let negotiation = async {
+        pc.add_track(room.video_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await?;
+        pc.add_track(room.audio_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await?;
+        negotiate(&pc, offer_sdp).await
+    }
+    .await;
+    let sdp = match negotiation {
+        Ok(sdp) => sdp,
+        Err(error) => {
+            let _ = pc.close().await;
+            return Err(error);
+        }
+    };
 
     let viewer_id = Uuid::new_v4();
-    let count = room.add_viewer(viewer_id, pc.clone()).await;
-    state.publish(AppEvent::ViewerCount {
-        stream_id: stream_id.clone(),
-        count,
-    });
 
     {
         let state = state.clone();
@@ -105,24 +99,39 @@ async fn watch(
                         | RTCPeerConnectionState::Failed
                         | RTCPeerConnectionState::Closed
                 ) {
-                    // PCは既に切断/終了処理中なので、ここではRoomからの除去とカウント通知のみ行う。
-                    if let Some((count, _pc)) = room.remove_viewer(&viewer_id).await {
-                        state.publish(AppEvent::ViewerCount {
-                            stream_id: stream_id.clone(),
-                            count,
-                        });
-                    }
+                    // close()は状態通知のロック外で実行する。
+                    tokio::spawn(async move {
+                        if let Some((_count, pc)) = room.remove_viewer(&viewer_id).await {
+                            publish_viewer_count(&state, &room).await;
+                            let _ = pc.close().await;
+                        }
+                    });
                 }
             })
         }));
     }
+
+    let rooms = state.rooms.read().await;
+    if !rooms.get(&stream_id).is_some_and(|current| current.session_id == room.session_id) {
+        drop(rooms);
+        let _ = pc.close().await;
+        return Err(AppError::conflict("配信は終了しています"));
+    }
+    let Some(count) = room.add_viewer(viewer_id, pc.clone()).await else {
+        drop(rooms);
+        let _ = pc.close().await;
+        return Err(AppError::conflict("配信または視聴接続は終了しています"));
+    };
+    state.publish(AppEvent::ViewerCount { stream_id: stream_id.clone(), count });
+    drop(rooms);
 
     let headers = [
         (header::CONTENT_TYPE, SDP_MIME.to_string()),
         (header::LOCATION, format!("/api/whep/resource/{viewer_id}")),
     ];
 
-    Ok((StatusCode::CREATED, headers, local_desc.sdp).into_response())
+    pending.finish();
+    Ok((StatusCode::CREATED, headers, sdp).into_response())
 }
 
 /// `DELETE /api/whep/resource/{viewer_id}` — 視聴終了の明示通知(ページ離脱時など)。
@@ -130,16 +139,20 @@ async fn watch(
 async fn terminate(Path(viewer_id): Path<Uuid>, State(state): State<AppState>) -> AppResult<StatusCode> {
     let rooms: Vec<_> = state.rooms.read().await.values().cloned().collect();
     for room in rooms {
-        if let Some((count, pc)) = room.remove_viewer(&viewer_id).await {
+        if let Some((_count, pc)) = room.remove_viewer(&viewer_id).await {
+            publish_viewer_count(&state, &room).await;
             let _ = pc.close().await;
-            state.publish(AppEvent::ViewerCount {
-                stream_id: room.stream_id.clone(),
-                count,
-            });
             break;
         }
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn publish_viewer_count(state: &AppState, room: &crate::sfu::room::Room) {
+    let rooms = state.rooms.read().await;
+    if rooms.get(&room.stream_id).is_some_and(|current| current.session_id == room.session_id) {
+        state.publish(AppEvent::ViewerCount { stream_id: room.stream_id.clone(), count: room.viewer_count() });
+    }
 }
 
 pub fn router() -> Router<AppState> {

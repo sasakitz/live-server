@@ -10,3 +10,26 @@
 *.db-shm
 *.db-wal
 session_key.bin
+
+# 個人環境・エージェント・クラウド認証の設定
+/.agents/
+/.codex/
+/.aws/
+/.vscode/
+/.idea/
+
+# 環境別の実設定と認証情報(サンプルだけは公開する)
+/config.*.toml
+!/config.example.toml
+/deploy/config.toml
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# 個人用メモ・履歴バックアップ・ログはローカル専用
+/.local/
+*.log

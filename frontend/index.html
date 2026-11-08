@@ -8,82 +8,51 @@
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="header">
-  <a href="/" class="header__brand">🖥️ μTube</a>
-  <nav class="header__nav" id="nav-links"></nav>
+  <a href="/" class="header__brand"><span class="brand-mark" aria-hidden="true">▶</span>μTube</a>
+  <nav class="header__nav" id="nav-links" aria-label="メインナビゲーション"></nav>
 </header>
 
-<main class="container">
-  <div class="section-title">
-    <h2>配信中</h2>
-  </div>
-  <div id="live-grid" class="grid"></div>
-  <div id="empty" class="empty-state" hidden>現在ライブ配信中の番組はありません。</div>
+<main id="main-content" class="container">
+  <section class="hero" aria-labelledby="page-title">
+    <div>
+      <span class="eyebrow">YOUR MOMENT, LIVE.</span>
+      <h1 id="page-title">いま、つながるライブ。</h1>
+      <p>気になる配信を見つけて、そのまま視聴。<br>リアルタイムのひとときを、μTubeで。</p>
+      <a href="/dashboard" class="btn">自分の配信を管理 <span aria-hidden="true">↗</span></a>
+    </div>
+    <div class="hero__status" aria-label="現在の配信状況">
+      <span class="badge badge--public" id="hero-status">確認中</span>
+      <strong class="hero__count" id="hero-count">—</strong>
+      <span class="hero__label">現在配信中のライブ</span>
+    </div>
+  </section>
+
+  <section aria-labelledby="live-heading">
+    <div class="section-title">
+      <div class="section-title__group"><h2 id="live-heading">配信中のライブ</h2><span class="count-pill" id="live-count" aria-live="polite">読み込み中</span></div>
+      <div class="search-field">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
+        <label class="sr-only" for="stream-search">ライブを検索</label>
+        <input type="search" id="stream-search" placeholder="タイトルや説明で検索" />
+      </div>
+    </div>
+    <div id="load-error" class="notice notice--error" role="alert" hidden>
+      <p id="load-error-message"></p><button id="retry-btn" type="button" class="btn btn--secondary btn--sm">もう一度読み込む</button>
+    </div>
+    <div id="loading" class="loading-state" role="status">ライブを読み込んでいます</div>
+    <div id="live-grid" class="grid" aria-busy="true"></div>
+    <div id="empty" class="empty-state" hidden>
+      <span class="empty-state__icon" aria-hidden="true">▷</span>
+      <h2 id="empty-title">次のライブを、お楽しみに。</h2>
+      <p id="empty-description">現在配信中のライブはありません。配信が始まると、ここに表示されます。</p>
+      <button id="clear-search" type="button" class="btn btn--secondary" hidden>検索をクリア</button>
+    </div>
+  </section>
 </main>
-
+<footer class="site-footer"><span>μTube</span><span>ライブで、もっと身近に。</span></footer>
 <script src="/js/common.js"></script>
-<script>
-let streams = [];
-
-function render() {
-  const grid = document.getElementById('live-grid');
-  const empty = document.getElementById('empty');
-  if (streams.length === 0) {
-    grid.innerHTML = '';
-    empty.hidden = false;
-    return;
-  }
-  empty.hidden = true;
-  grid.innerHTML = streams.map((s) => `
-    <a class="card stream-card" href="/watch/${encodeURIComponent(s.id)}">
-      <div class="stream-card__thumb">
-        <img class="stream-card__thumb-img" data-stream-id="${escapeHtml(s.id)}"
-          src="/api/streams/${encodeURIComponent(s.id)}/thumbnail.jpg" alt="" loading="lazy"
-          onerror="this.remove()" />
-        <span class="badge badge--live"><span class="badge__dot"></span>LIVE</span>
-      </div>
-      <div class="stream-card__body">
-        <p class="stream-card__title">${escapeHtml(s.title)}</p>
-        <p class="stream-card__meta">👁 ${s.viewer_count}人視聴中${s.public ? ' ・ <span class="badge badge--public">公開</span>' : ''}</p>
-      </div>
-    </a>
-  `).join('');
-}
-
-/** サムネイルは配信一覧の再描画とは無関係に、一定間隔で明示的に再取得する。 */
-function refreshThumbnails() {
-  document.querySelectorAll('.stream-card__thumb-img').forEach((img) => {
-    const id = img.dataset.streamId;
-    img.src = `/api/streams/${encodeURIComponent(id)}/thumbnail.jpg?t=${Date.now()}`;
-  });
-}
-
-async function load() {
-  try {
-    streams = await api('/api/streams');
-  } catch (e) {
-    streams = [];
-  }
-  render();
-}
-
-function upsertViewerCount(streamId, count) {
-  const s = streams.find((x) => x.id === streamId);
-  if (s) {
-    s.viewer_count = count;
-    render();
-  }
-}
-
-load();
-setInterval(refreshThumbnails, 10000);
-connectEvents((event) => {
-  if (event.type === 'stream_online' || event.type === 'stream_offline') {
-    load();
-  } else if (event.type === 'viewer_count') {
-    upsertViewerCount(event.stream_id, event.count);
-  }
-});
-</script>
+<script src="/js/home.js"></script>
 </body>
 </html>

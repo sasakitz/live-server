@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::auth::{hash_password, AdminUser};
+use crate::auth::{hash_password_async, AdminUser};
 use crate::error::{AppError, AppResult};
 use crate::models::{generate_stream_key, User, Webhook, ROLE_ADMIN, ROLE_BROADCASTER};
 use crate::sfu::lifecycle;
@@ -68,14 +68,14 @@ async fn create_user(
     if body.username.trim().is_empty() {
         return Err(AppError::bad_request("ユーザ名は空にできません"));
     }
-    if body.password.len() < 8 {
+    if body.password.chars().count() < 8 {
         return Err(AppError::bad_request("パスワードは8文字以上にしてください"));
     }
     if !valid_role(&body.role) {
         return Err(AppError::bad_request("roleはadminかbroadcasterのいずれかです"));
     }
 
-    let hash = hash_password(&body.password)?;
+    let hash = hash_password_async(body.password.clone()).await?;
     let now = OffsetDateTime::now_utc();
     let result = sqlx::query(
         "INSERT INTO users (username, password_hash, role, disabled, created_at) VALUES (?, ?, ?, 0, ?)",
@@ -143,10 +143,11 @@ async fn update_user(
     };
 
     if let Some(password) = &body.password {
-        if password.len() < 8 {
+        if password.chars().count() < 8 {
             return Err(AppError::bad_request("パスワードは8文字以上にしてください"));
         }
-        let hash = hash_password(password)?;
+        let hash = hash_password_async(password.clone()).await?;
+        let _rooms_guard = state.rooms.write().await;
         sqlx::query("UPDATE users SET role = ?, disabled = ?, password_hash = ? WHERE id = ?")
             .bind(&role)
             .bind(disabled)
@@ -155,12 +156,19 @@ async fn update_user(
             .execute(&state.db)
             .await?;
     } else {
+        let _rooms_guard = state.rooms.write().await;
         sqlx::query("UPDATE users SET role = ?, disabled = ? WHERE id = ?")
             .bind(&role)
             .bind(disabled)
             .bind(user_id)
             .execute(&state.db)
             .await?;
+    }
+
+    if disabled {
+        let owned: Vec<(String,)> = sqlx::query_as("SELECT id FROM streams WHERE owner_user_id = ?")
+            .bind(user_id).fetch_all(&state.db).await?;
+        for (id,) in owned { lifecycle::stop_stream(&state, &id).await?; }
     }
 
     let updated = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
@@ -178,20 +186,22 @@ async fn delete_user(
     if user_id == admin.id {
         return Err(AppError::bad_request("自分自身のアカウントは削除できません"));
     }
-    // 所有する配信がライブ中なら先に止める(FK CASCADEで配信自体は削除される)。
-    let owned_live: Vec<(String,)> =
-        sqlx::query_as("SELECT id FROM streams WHERE owner_user_id = ? AND is_live = 1")
-            .bind(user_id)
-            .fetch_all(&state.db)
-            .await?;
-    for (stream_id,) in owned_live {
-        lifecycle::stop_stream(&state, &stream_id, true).await?;
-    }
-
-    sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
+    // 先に無効化して再接続を止め、ネゴシエーション中の配信も停止対象にする。
+    let owned: Vec<(String,)> = {
+        let _rooms = state.rooms.write().await;
+        sqlx::query("UPDATE users SET disabled = 1 WHERE id = ?").bind(user_id).execute(&state.db).await?;
+        sqlx::query_as("SELECT id FROM streams WHERE owner_user_id = ?")
+            .bind(user_id).fetch_all(&state.db).await?
+    };
+    for (stream_id,) in &owned { lifecycle::stop_stream(&state, stream_id).await?; }
+    let remaining: Vec<(String,)> = {
+        let _rooms = state.rooms.write().await;
+        let ids = sqlx::query_as("SELECT id FROM streams WHERE owner_user_id = ?")
+            .bind(user_id).fetch_all(&state.db).await?;
+        sqlx::query("DELETE FROM users WHERE id = ?").bind(user_id).execute(&state.db).await?;
+        ids
+    };
+    for (stream_id,) in remaining { lifecycle::stop_stream(&state, &stream_id).await?; }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -394,6 +404,7 @@ async fn update_stream(
         return Err(AppError::bad_request("タイトルは空にできません"));
     }
 
+    let rooms_guard = state.rooms.read().await;
     sqlx::query("UPDATE streams SET title = ?, description = ?, public = ?, owner_user_id = ? WHERE id = ?")
         .bind(&title)
         .bind(&description)
@@ -402,6 +413,9 @@ async fn update_stream(
         .bind(&stream_id)
         .execute(&state.db)
         .await?;
+
+    if let Some(room) = rooms_guard.get(&stream_id) { room.set_public(public); }
+    drop(rooms_guard);
 
     let query = format!("{ADMIN_STREAM_SELECT} WHERE streams.id = ?");
     let row = sqlx::query_as::<_, AdminStreamRow>(sqlx::AssertSqlSafe(query))
@@ -416,11 +430,7 @@ async fn delete_stream(
     _admin: AdminUser,
     Path(stream_id): Path<String>,
 ) -> AppResult<StatusCode> {
-    lifecycle::stop_stream(&state, &stream_id, true).await?;
-    sqlx::query("DELETE FROM streams WHERE id = ?")
-        .bind(&stream_id)
-        .execute(&state.db)
-        .await?;
+    lifecycle::delete_stream(&state, &stream_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -429,15 +439,7 @@ async fn regenerate_key(
     _admin: AdminUser,
     Path(stream_id): Path<String>,
 ) -> AppResult<Json<AdminStreamOut>> {
-    let new_key = generate_stream_key();
-    let result = sqlx::query("UPDATE streams SET stream_key = ? WHERE id = ?")
-        .bind(&new_key)
-        .bind(&stream_id)
-        .execute(&state.db)
-        .await?;
-    if result.rows_affected() == 0 {
-        return Err(AppError::not_found("配信が見つかりません"));
-    }
+    lifecycle::regenerate_key(&state, &stream_id).await?;
 
     let query = format!("{ADMIN_STREAM_SELECT} WHERE streams.id = ?");
     let row = sqlx::query_as::<_, AdminStreamRow>(sqlx::AssertSqlSafe(query))
@@ -452,7 +454,7 @@ async fn stop_stream_handler(
     _admin: AdminUser,
     Path(stream_id): Path<String>,
 ) -> AppResult<StatusCode> {
-    lifecycle::stop_stream(&state, &stream_id, true).await?;
+    lifecycle::stop_stream(&state, &stream_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

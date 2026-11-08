@@ -8,32 +8,35 @@
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="header">
-  <a href="/" class="header__brand">🖥️ μTube</a>
-  <nav class="header__nav" id="nav-links"></nav>
+  <a href="/" class="header__brand"><span class="brand-mark" aria-hidden="true">▶</span>μTube</a>
+  <nav class="header__nav" id="nav-links" aria-label="メインナビゲーション"></nav>
 </header>
 
-<main class="container">
-  <div class="section-title"><h2>管理者設定</h2></div>
+<main id="main-content" class="container">
+  <div class="page-heading"><div><span class="eyebrow">ADMINISTRATION</span><h1>管理者設定</h1><p>サーバの状況と、ユーザ・配信・通知をまとめて管理。</p></div></div>
+  <div id="admin-error" class="notice notice--error" role="alert" hidden><p id="admin-error-message"></p><button id="admin-retry" class="btn btn--secondary btn--sm" type="button">もう一度読み込む</button></div>
 
-  <div class="tabs">
-    <button class="tab is-active" data-tab="overview">概要</button>
-    <button class="tab" data-tab="users">ユーザ</button>
-    <button class="tab" data-tab="streams">配信</button>
-    <button class="tab" data-tab="webhooks">Webhook</button>
+  <div class="tabs" role="tablist" aria-label="管理メニュー">
+    <button class="tab is-active" data-tab="overview" role="tab" id="menu-overview" aria-controls="tab-overview" aria-selected="true" tabindex="0">サーバ状況</button>
+    <button class="tab" data-tab="users" role="tab" id="menu-users" aria-controls="tab-users" aria-selected="false" tabindex="-1">ユーザ管理</button>
+    <button class="tab" data-tab="streams" role="tab" id="menu-streams" aria-controls="tab-streams" aria-selected="false" tabindex="-1">配信管理</button>
+    <button class="tab" data-tab="webhooks" role="tab" id="menu-webhooks" aria-controls="tab-webhooks" aria-selected="false" tabindex="-1">通知設定</button>
   </div>
 
-  <section id="tab-overview" class="tab-panel is-active">
-    <div class="grid" id="overview-stats"></div>
+  <section role="tabpanel" aria-labelledby="menu-overview" tabindex="0" id="tab-overview" class="tab-panel is-active">
+    <div class="grid stat-grid" id="overview-stats"><div class="loading-state" role="status">サーバ状況を読み込んでいます</div></div>
+    <div class="notice" style="margin-top:24px"><strong>管理のヒント</strong><p class="help-text">「ユーザ管理」で配信者を登録し、「配信管理」で配信を作成できます。配信開始・終了のDiscord通知は「通知設定」から設定してください。</p></div>
   </section>
 
-  <section id="tab-users" class="tab-panel">
+  <section role="tabpanel" aria-labelledby="menu-users" tabindex="0" id="tab-users" class="tab-panel">
     <div class="btn-row" style="margin-bottom:16px">
       <button id="user-new-btn" class="btn btn--sm" type="button">＋ 新規ユーザ</button>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ユーザ名</th><th>ロール</th><th>状態</th><th>作成日</th><th></th></tr></thead>
+        <thead><tr><th>ユーザ名</th><th>ロール</th><th>状態</th><th>作成日</th><th>操作</th></tr></thead>
         <tbody id="users-tbody"></tbody>
       </table>
     </div>
@@ -53,8 +56,8 @@
         <div class="field">
           <label for="user-role">ロール</label>
           <select id="user-role">
-            <option value="broadcaster">broadcaster (配信者)</option>
-            <option value="admin">admin (管理者)</option>
+            <option value="broadcaster">配信者</option>
+            <option value="admin">管理者</option>
           </select>
         </div>
         <div class="field checkbox-row">
@@ -69,13 +72,13 @@
     </div>
   </section>
 
-  <section id="tab-streams" class="tab-panel">
+  <section role="tabpanel" aria-labelledby="menu-streams" tabindex="0" id="tab-streams" class="tab-panel">
     <div class="btn-row" style="margin-bottom:16px">
       <button id="stream-new-btn" class="btn btn--sm" type="button">＋ 新規配信</button>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>タイトル</th><th>配信者</th><th>状態</th><th>公開</th><th>視聴者</th><th></th></tr></thead>
+        <thead><tr><th>ID</th><th>タイトル</th><th>配信者</th><th>状態</th><th>公開</th><th>視聴者</th><th>操作</th></tr></thead>
         <tbody id="streams-tbody"></tbody>
       </table>
     </div>
@@ -85,7 +88,7 @@
       <form id="stream-form">
         <div class="field">
           <label for="stream-id">配信ID (URLに使用。作成後は変更不可)</label>
-          <input type="text" id="stream-id" pattern="[a-z0-9-]+" placeholder="例: yamada-radio" required />
+          <input type="text" id="stream-id" maxlength="64" pattern="[a-z0-9-]+" placeholder="例: yamada-radio" required />
         </div>
         <div class="field">
           <label for="stream-owner">配信者(ユーザ)</label>
@@ -111,14 +114,14 @@
     </div>
   </section>
 
-  <section id="tab-webhooks" class="tab-panel">
+  <section role="tabpanel" aria-labelledby="menu-webhooks" tabindex="0" id="tab-webhooks" class="tab-panel">
     <p class="help-text mt-0">配信の開始/終了をDiscordなどのWebhook URLへ通知します。</p>
     <div class="btn-row" style="margin-bottom:16px">
       <button id="webhook-new-btn" class="btn btn--sm" type="button">＋ 新規Webhook</button>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>名前</th><th>URL</th><th>開始通知</th><th>終了通知</th><th>有効</th><th></th></tr></thead>
+        <thead><tr><th>名前</th><th>URL</th><th>開始通知</th><th>終了通知</th><th>有効</th><th>操作</th></tr></thead>
         <tbody id="webhooks-tbody"></tbody>
       </table>
     </div>

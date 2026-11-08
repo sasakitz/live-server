@@ -4,6 +4,9 @@
 //! VP8/VP9は登録しない(=SDP上の選択肢に出さない)ことで、OBS/ブラウザ双方に
 //! H.264(+Opus)を強制する。
 
+use std::collections::HashSet;
+use std::net::IpAddr;
+
 use anyhow::{Context, Result};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
@@ -98,6 +101,12 @@ fn build_media_engine() -> Result<MediaEngine> {
     Ok(m)
 }
 
+/// 公開IPがNICに直接付いている場合と、NAT配下のローカルIPの両方を収集対象にする。
+/// IPv4のNAT用bind_ipsを指定しても、public_ipsのIPv6候補を除外しない。
+fn candidate_ips(cfg: &WebRtcConfig) -> HashSet<IpAddr> {
+    cfg.public_ips.iter().chain(&cfg.bind_ips).copied().collect()
+}
+
 /// SFU全体で共有する webrtc `API` を構築する。
 pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
     let mut media_engine = build_media_engine()?;
@@ -118,26 +127,10 @@ pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
     // サーバは固定の公開IPを持つため、ブラウザ向けプライバシー機能であるmDNS候補は不要。
     // 無効化してICE candidate gatheringを単純化・高速化する。
     setting_engine.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
-    // ローカル候補の収集をpublic_ipsに列挙したアドレスのみに絞る。Docker/Tailscale等の
-    // 仮想インターフェースやIPv6リンクローカルアドレスが多数存在する環境では、それら
-    // 全てに対してエフェメラルポート範囲(数百ポート)を1つずつ総当たりでbindしようと
-    // した結果、本来使うべきアドレスに到達する前にICE gathering自体が中断されてしまい
-    // 接続不能になる現象を実機で確認した。1:1 NATマッピング対象外のアドレスから
-    // 候補を収集しても(公開IPとして広告できないため)どのみち使い物にならないので、
-    // このフィルタで絞ることに副作用はない。
-    // 注意: set_network_types(vec![Udp4])のようにアドレス"ファミリ"単位で絞り込むと、
-    // 環境によっては候補が1件も生成されずICE接続不能になる現象を別途確認したため、
-    // そちらは意図的に使っていない(アドレス単位のset_ip_filterのみを用いる)。
-    // bind_ipsが未指定ならpublic_ipsをそのまま使う(public_ipsがNICに直接付いている
-    // クラウドVM等の構成)。自宅サーバ等、public_ipsがルータ経由のグローバルIPで
-    // NICには存在しない構成では、bind_ipsにサーバ機自身のLAN側IPを指定させる
-    // (WebRtcConfig::bind_ipsのコメント参照)。
-    let bind_ips = if cfg.bind_ips.is_empty() {
-        &cfg.public_ips
-    } else {
-        &cfg.bind_ips
-    };
-    let allowed_ips: std::collections::HashSet<std::net::IpAddr> = bind_ips.iter().copied().collect();
+    // 仮想NIC等から不要な候補を集めないよう、設定されたIPに絞る。
+    // public_ipsのNIC直結アドレスと、NAT用bind_ipsを併用する。
+    // ネットワーク種別は既定のUDP IPv4/IPv6両方を利用する。
+    let allowed_ips = candidate_ips(cfg);
     setting_engine.set_ip_filter(Box::new(move |ip| allowed_ips.contains(&ip)));
 
     let api = APIBuilder::new()
@@ -147,4 +140,38 @@ pub fn build_api(cfg: &WebRtcConfig) -> Result<API> {
         .build();
 
     Ok(api)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(public_ips: &[&str], bind_ips: &[&str]) -> WebRtcConfig {
+        WebRtcConfig {
+            public_ips: public_ips.iter().map(|ip| ip.parse().unwrap()).collect(),
+            bind_ips: bind_ips.iter().map(|ip| ip.parse().unwrap()).collect(),
+            udp_port_min: 5000,
+            udp_port_max: 5200,
+            stun_servers: vec![],
+        }
+    }
+
+    #[test]
+    fn ipv4_nat_binding_preserves_public_ipv6_candidate() {
+        let cfg = config(&["203.0.113.10", "2001:db8::10"], &["192.168.1.7"]);
+        let ips = candidate_ips(&cfg);
+        assert!(ips.contains(&"192.168.1.7".parse::<IpAddr>().unwrap()));
+        assert!(ips.contains(&"2001:db8::10".parse::<IpAddr>().unwrap()));
+        assert!(!ips.contains(&"2001:db8::99".parse::<IpAddr>().unwrap()));
+        build_api(&cfg).unwrap();
+    }
+
+    #[test]
+    fn ipv6_only_configuration_is_supported() {
+        let cfg = config(&["2001:db8::10"], &[]);
+        let ips = candidate_ips(&cfg);
+        assert_eq!(ips.len(), 1);
+        assert!(ips.contains(&"2001:db8::10".parse::<IpAddr>().unwrap()));
+        build_api(&cfg).unwrap();
+    }
 }

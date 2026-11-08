@@ -27,6 +27,8 @@ const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 pub struct ThumbnailCapturer {
     depacketizer: H264Packet,
     au_buffer: BytesMut,
+    au_input_bytes: usize,
+    discarding_au: bool,
     capture_buffer: BytesMut,
     capturing: bool,
     au_count_since_start: u32,
@@ -48,6 +50,8 @@ impl ThumbnailCapturer {
         ThumbnailCapturer {
             depacketizer: H264Packet::default(),
             au_buffer: BytesMut::new(),
+            au_input_bytes: 0,
+            discarding_au: false,
             capture_buffer: BytesMut::new(),
             capturing: false,
             au_count_since_start: 0,
@@ -61,12 +65,34 @@ impl ThumbnailCapturer {
     /// マーカービットで完結し、かつキャプチャ条件(前回から一定時間経過後の
     /// 最初のキーフレーム)を満たした場合のみ、ffmpegに渡すAnnex-B断片を返す。
     pub fn push(&mut self, packet: &Packet) -> Option<Bytes> {
-        if let Ok(payload) = self.depacketizer.depacketize(&packet.payload) {
-            self.au_buffer.extend_from_slice(&payload);
+        self.au_input_bytes = self.au_input_bytes.saturating_add(packet.payload.len());
+        if !self.discarding_au && self.au_input_bytes <= MAX_CAPTURE_BYTES {
+            if let Ok(payload) = self.depacketizer.depacketize(&packet.payload) {
+                if self.au_buffer.len().saturating_add(payload.len()) <= MAX_CAPTURE_BYTES {
+                    self.au_buffer.extend_from_slice(&payload);
+                } else {
+                    self.discarding_au = true;
+                }
+            }
+        } else {
+            self.discarding_au = true;
         }
-        if !packet.header.marker {
+        if self.discarding_au {
+            // マーカービット欠落やFU-A断片の連続でも、内部バッファを無制限に増やさない。
+            self.depacketizer = H264Packet::default();
+            self.au_buffer.clear();
+            self.capture_buffer.clear();
+            self.capturing = false;
+            if packet.header.marker {
+                self.discarding_au = false;
+                self.au_input_bytes = 0;
+            }
             return None;
         }
+        if !packet.header.marker { return None; }
+        self.au_input_bytes = 0;
+        // FU-Aの終端欠落があっても、未完のNALを次のアクセスユニットへ持ち越さない。
+        self.depacketizer = H264Packet::default();
         let au = self.au_buffer.split().freeze();
         if au.is_empty() {
             return None;
@@ -105,6 +131,12 @@ impl ThumbnailCapturer {
             return None;
         }
 
+        if self.capture_buffer.len().saturating_add(au.len()) > MAX_CAPTURE_BYTES {
+            self.capture_buffer.clear();
+            self.capturing = false;
+            self.last_capture_at = Some(Instant::now());
+            return None;
+        }
         self.capture_buffer.extend_from_slice(&au);
         self.au_count_since_start += 1;
         if self.au_count_since_start < CAPTURE_AU_COUNT && self.capture_buffer.len() < MAX_CAPTURE_BYTES {
@@ -183,19 +215,38 @@ pub async fn encode_jpeg(annexb: Bytes) -> Option<Bytes> {
     let mut stdin = child.stdin.take()?;
     let mut stdout = child.stdout.take()?;
 
-    let write_task = tokio::spawn(async move {
-        let _ = stdin.write_all(&annexb).await;
-        // 明示的にdropしてEOFを通知し、ffmpeg側のデコード完了を促す。
-        drop(stdin);
-    });
+    // 入出力を並行して処理し、ffmpegの停止・不正入力でタスクが残り続けないようにする。
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let write = async {
+            let result = stdin.write_all(&annexb).await;
+            drop(stdin);
+            result
+        };
+        let mut out = Vec::new();
+        let (_write_result, read_result) = tokio::join!(write, stdout.read_to_end(&mut out));
+        let status = child.wait().await.ok()?;
+        if read_result.is_err() || !status.success() || out.is_empty() {
+            return None;
+        }
+        Some(Bytes::from(out))
+    }).await.ok().flatten()
+}
 
-    let mut out = Vec::new();
-    let read_result = stdout.read_to_end(&mut out).await;
-    let _ = write_task.await;
-    let status = child.wait().await.ok()?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if read_result.is_err() || !status.success() || out.is_empty() {
-        return None;
+    #[test]
+    fn malformed_rtp_cannot_grow_access_unit_buffers_forever() {
+        let mut capturer = ThumbnailCapturer::new();
+        let mut packet = Packet::default();
+        packet.payload = Bytes::from(vec![0x61; 65536]);
+        for _ in 0..100 { assert!(capturer.push(&packet).is_none()); }
+        assert!(capturer.au_buffer.len() <= MAX_CAPTURE_BYTES);
+        assert!(capturer.discarding_au);
+        packet.header.marker = true;
+        capturer.push(&packet);
+        assert!(!capturer.discarding_au);
+        assert!(capturer.au_buffer.is_empty());
     }
-    Some(Bytes::from(out))
 }

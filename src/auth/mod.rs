@@ -39,6 +39,11 @@ pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Er
     Ok(hash.to_string())
 }
 
+/// Argon2はCPU負荷が高いため、リクエスト処理では非同期ランタイムから分離する。
+pub async fn hash_password_async(password: String) -> Result<String> {
+    Ok(tokio::task::spawn_blocking(move || hash_password(&password)).await??)
+}
+
 pub fn verify_password(password: &str, hash: &str) -> bool {
     match PasswordHash::new(hash) {
         Ok(parsed) => Argon2::default()
@@ -54,20 +59,33 @@ pub fn load_or_generate_session_key(data_dir: &Path) -> Result<Key> {
         .with_context(|| format!("データディレクトリの作成に失敗しました: {}", data_dir.display()))?;
     let key_path = data_dir.join(SESSION_KEY_FILE);
 
-    if let Ok(bytes) = std::fs::read(&key_path) {
-        return Key::try_from(bytes.as_slice())
-            .with_context(|| format!("セッション鍵ファイルが不正です: {}", key_path.display()));
+    let read_key = || -> Result<Key> {
+        let bytes = std::fs::read(&key_path)
+            .with_context(|| format!("セッション鍵の読み込みに失敗しました: {}", key_path.display()))?;
+        Key::try_from(bytes.as_slice())
+            .with_context(|| format!("セッション鍵ファイルが不正です: {}", key_path.display()))
+    };
+    match std::fs::read(&key_path) {
+        Ok(bytes) => return Key::try_from(bytes.as_slice())
+            .with_context(|| format!("セッション鍵ファイルが不正です: {}", key_path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => return Err(error).context("既存セッション鍵を読み込めませんでした"),
     }
-
-    let key = Key::generate();
-    std::fs::write(&key_path, key.master())
-        .with_context(|| format!("セッション鍵の書き込みに失敗しました: {}", key_path.display()))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("セッション鍵の権限設定に失敗しました: {}", key_path.display()))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let mut file = match options.open(&key_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return read_key(),
+        Err(error) => return Err(error).context("セッション鍵ファイルを作成できませんでした"),
+    };
+    let key = Key::generate();
+    use std::io::Write;
+    file.write_all(key.master()).context("セッション鍵の保存に失敗しました")?;
     tracing::info!(path = %key_path.display(), "セッション鍵を新規生成しました");
     Ok(key)
 }
@@ -211,16 +229,13 @@ async fn login(
         .fetch_optional(&state.db)
         .await?;
 
-    let Some(user) = user else {
-        // ユーザが存在しなくても常にArgon2検証を実行し、応答時間の差からユーザ名の
-        // 存在有無が推測できないようにする。
-        verify_password(&body.password, &DUMMY_HASH);
-        return Err(AppError::unauthorized("ユーザ名またはパスワードが違います"));
-    };
-
-    if !verify_password(&body.password, &user.password_hash) {
-        return Err(AppError::unauthorized("ユーザ名またはパスワードが違います"));
-    }
+    let password_hash = user.as_ref().map(|user| user.password_hash.clone());
+    let valid = tokio::task::spawn_blocking(move || {
+        let hash = password_hash.unwrap_or_else(|| DUMMY_HASH.clone());
+        verify_password(&body.password, &hash)
+    }).await?;
+    let user = user.filter(|_| valid)
+        .ok_or_else(|| AppError::unauthorized("ユーザ名またはパスワードが違います"))?;
     if user.disabled {
         return Err(AppError::forbidden("アカウントが無効化されています"));
     }
@@ -246,4 +261,30 @@ pub fn router() -> Router<AppState> {
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/me", axum::routing::get(me))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_key_is_reused_and_invalid_existing_files_are_not_overwritten() {
+        let root = std::env::temp_dir().join(format!("live-server-key-{}", uuid::Uuid::new_v4()));
+        let key = load_or_generate_session_key(&root).unwrap();
+        assert_eq!(key.master(), load_or_generate_session_key(&root).unwrap().master());
+        let path = root.join(SESSION_KEY_FILE);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(load_or_generate_session_key(&root).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(load_or_generate_session_key(&root).is_err());
+        assert!(path.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

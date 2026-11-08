@@ -82,12 +82,12 @@ pub fn send_test(state: &AppState, url: String) {
 fn send_one(state: &AppState, url: String, payload: Value) {
     let http = state.http.clone();
     tokio::spawn(async move {
-        match http.post(&url).json(&payload).send().await {
+        match http.post(&url).timeout(std::time::Duration::from_secs(10)).json(&payload).send().await {
             Ok(resp) if !resp.status().is_success() => {
-                tracing::warn!(url = %url, status = %resp.status(), "Webhook送信がエラー応答を返しました");
+                tracing::warn!(status = %resp.status(), "Webhook送信がエラー応答を返しました");
             }
             Err(e) => {
-                tracing::warn!(url = %url, error = ?e, "Webhook送信に失敗しました");
+                tracing::warn!(error = ?e.without_url(), "Webhook送信に失敗しました");
             }
             _ => {}
         }

@@ -21,12 +21,13 @@ secure_cookies = false
 #   public_ips = ["203.0.113.10", "2001:db8::1"]
 # ローカルで動作確認するだけなら127.0.0.1でよい(LAN内までしか疎通しない)。
 public_ips = ["127.0.0.1"]
-# ICE候補収集を絞り込むローカルNICアドレス(任意)。未指定ならpublic_ipsと同じ値を使う。
-# 自宅サーバ等、ルータのポート開放/DMZ経由のグローバルIPをpublic_ipsに指定していて、
-# そのIPがサーバ機のNICには付いていない場合は、ここにサーバ機自身のLAN側IPを
-# 指定すること(指定しないとICE候補が0件になり配信が確立しない)。
+# public_ipsに加えて収集するローカルNICアドレス(任意)。
+# IPv4 NAT配下ではサーバ機自身のLAN側IPv4を指定する。
+# public_ipsのNIC直結IPv6は、bind_ipsに書かなくても収集される。
+# 例: public_ips = ["203.0.113.10", "2001:db8::10"] のIPv4 NAT + IPv6環境では:
 #   bind_ips = ["192.168.1.7"]
-# WebRTCメディア(SRTP/DTLS)に使うUDPポート範囲。ファイアウォールはこの範囲を開放する。
+# アドレス確認: ip -4 addr show / ip -6 addr show scope global
+# UDPポート範囲をIPv4/IPv6の両方で許可し、必要なICMPv6も通すこと。
 udp_port_min = 5000
 udp_port_max = 5200
 # ブラウザ側のICEに使わせるSTUNサーバ(/api/client-config経由で配布)。
@@ -34,7 +35,8 @@ udp_port_max = 5200
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [auth]
-# trueにすると、未ログインユーザでもpublicな配信を視聴できる。
+# trueにすると、public設定にかかわらず未ログインで全配信を視聴できる。
+# falseでも、個別にpublicに設定した配信は未ログインで視聴できる。
 public_viewing = false
 
 # 初回起動時、存在しなければ自動作成される管理者アカウント。

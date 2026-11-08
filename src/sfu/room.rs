@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -17,6 +17,9 @@ pub type ViewerId = Uuid;
 /// 各視聴者PeerConnectionのsenderがそのローカルトラックを送出する(ファンアウト)。
 pub struct Room {
     pub stream_id: String,
+    pub session_id: Uuid,
+    closed: AtomicBool,
+    public: AtomicBool,
     pub video_track: Arc<TrackLocalStaticRTP>,
     pub audio_track: Arc<TrackLocalStaticRTP>,
     pub viewers: RwLock<HashMap<ViewerId, Arc<RTCPeerConnection>>>,
@@ -41,6 +44,9 @@ impl Room {
         ));
         Room {
             stream_id,
+            session_id: Uuid::new_v4(),
+            closed: AtomicBool::new(false),
+            public: AtomicBool::new(false),
             video_track,
             audio_track,
             viewers: RwLock::new(HashMap::new()),
@@ -51,14 +57,21 @@ impl Room {
         }
     }
 
-    pub async fn add_viewer(&self, id: ViewerId, pc: Arc<RTCPeerConnection>) -> usize {
+    pub async fn add_viewer(&self, id: ViewerId, pc: Arc<RTCPeerConnection>) -> Option<usize> {
         let mut viewers = self.viewers.write().await;
+        if self.closed.load(Ordering::SeqCst) || matches!(
+            pc.connection_state(),
+            webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Disconnected
+                | webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed
+                | webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
+        ) {
+            return None;
+        }
         viewers.insert(id, pc);
         let count = viewers.len();
-        drop(viewers);
         self.viewer_count.store(count, Ordering::SeqCst);
         self.peak_viewers.fetch_max(count, Ordering::SeqCst);
-        count
+        Some(count)
     }
 
     /// 視聴者を削除する。実際に存在した場合のみ `Some((更新後の人数, そのPeerConnection))` を返す。
@@ -68,10 +81,12 @@ impl Room {
         let mut viewers = self.viewers.write().await;
         let pc = viewers.remove(id)?;
         let count = viewers.len();
-        drop(viewers);
         self.viewer_count.store(count, Ordering::SeqCst);
         Some((count, pc))
     }
+
+    pub fn set_public(&self, public: bool) { self.public.store(public, Ordering::SeqCst); }
+    pub fn is_public(&self) -> bool { self.public.load(Ordering::SeqCst) }
 
     pub fn viewer_count(&self) -> usize {
         self.viewer_count.load(Ordering::SeqCst)
@@ -90,11 +105,28 @@ impl Room {
         // 実際のclose()はロックを解放した後に行う。
         let viewers: Vec<_> = {
             let mut viewers = self.viewers.write().await;
+            self.closed.store(true, Ordering::SeqCst);
+            self.viewer_count.store(0, Ordering::SeqCst);
             viewers.drain().collect()
         };
-        self.viewer_count.store(0, Ordering::SeqCst);
         for (_, pc) in viewers {
             let _ = pc.close().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ended_rooms_reject_late_viewers() {
+        let state = crate::state::test_state().await;
+        let room = Room::new("test".into());
+        room.close_all_viewers().await;
+        let pc = Arc::new(state.webrtc_api.new_peer_connection(Default::default()).await.unwrap());
+        assert!(room.add_viewer(Uuid::new_v4(), pc.clone()).await.is_none());
+        assert_eq!(room.viewer_count(), 0);
+        pc.close().await.unwrap();
     }
 }

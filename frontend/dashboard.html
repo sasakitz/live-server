@@ -8,26 +8,28 @@
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="header">
-  <a href="/" class="header__brand">🖥️ μTube</a>
-  <nav class="header__nav" id="nav-links"></nav>
+  <a href="/" class="header__brand"><span class="brand-mark" aria-hidden="true">▶</span>μTube</a>
+  <nav class="header__nav" id="nav-links" aria-label="メインナビゲーション"></nav>
 </header>
 
-<main class="container">
-  <div class="section-title">
-    <h2>配信管理</h2>
+<main id="main-content" class="container">
+  <div class="page-heading">
+    <div><span class="eyebrow">CREATOR STUDIO</span><h1>配信管理</h1><p>配信の準備から、視聴リンクの共有まで。</p></div>
+    <button id="stream-new-btn" class="btn" type="button">＋ 配信を作成</button>
   </div>
-
-  <div class="btn-row" style="margin-bottom:16px">
-    <button id="stream-new-btn" class="btn btn--sm" type="button">＋ 新規配信</button>
-  </div>
-
+  <ol class="steps" aria-label="配信を始める手順">
+    <li><span>1</span>配信を作成</li><li><span>2</span>OBSに接続設定を入力</li><li><span>3</span>OBSから配信開始</li>
+  </ol>
+  <div id="dashboard-error" class="notice notice--error" role="alert" hidden><p id="dashboard-error-message"></p><button id="dashboard-retry" class="btn btn--secondary btn--sm" type="button">もう一度読み込む</button></div>
+  <div id="dashboard-loading" class="loading-state" role="status">配信を読み込んでいます</div>
   <div class="card" id="stream-form-card" style="margin-bottom:20px" hidden>
-    <h3 style="margin-top:0">新規配信</h3>
+    <h2 class="mt-0">新しい配信を作成</h2><p class="help-text">作成後に表示される接続設定をOBSに入力すると、配信を開始できます。</p>
     <form id="stream-form">
       <div class="field">
         <label for="stream-id">配信ID (視聴URLに使用。作成後は変更不可)</label>
-        <input type="text" id="stream-id" pattern="[a-z0-9-]+" placeholder="例: yamada-radio" required />
+        <input type="text" id="stream-id" maxlength="64" pattern="[a-z0-9-]+" placeholder="例: yamada-radio" required />
       </div>
       <div class="field">
         <label for="stream-title">タイトル</label>
@@ -50,68 +52,60 @@
 
   <div id="streams"></div>
   <div id="empty" class="empty-state" hidden>
-    まだ配信がありません。「＋ 新規配信」から作成してください。
+    <span class="empty-state__icon" aria-hidden="true">＋</span><h2>最初のライブを準備しましょう</h2><p>「＋ 配信を作成」から、タイトルと配信IDを設定してください。</p>
   </div>
 </main>
 
 <template id="stream-template">
-  <div class="card" style="margin-bottom:20px">
-    <div class="section-title mt-0">
-      <h2 class="js-title" style="font-size:1.05rem"></h2>
-      <span class="js-badge"></span>
+  <article class="card manage-card">
+    <div class="manage-card__head">
+      <div class="section-title"><h2 class="js-title"></h2><span class="js-badge"></span></div>
+      <p class="js-viewer text-muted"></p>
     </div>
-
-    <p class="js-viewer text-muted"></p>
-
-    <div class="field">
-      <label>視聴用URL</label>
-      <div class="stream-key js-watch-url"></div>
-    </div>
-
-    <div class="field">
-      <label>Stream Key (OBSに設定する秘密情報。他人に共有しないでください)</label>
-      <div class="btn-row" style="margin-bottom:8px">
-        <code class="stream-key js-key" style="flex:1">••••••••••••••••••••••••••••••••</code>
-      </div>
-      <div class="btn-row">
-        <button type="button" class="btn btn--secondary btn--sm js-toggle-key">表示</button>
-        <button type="button" class="btn btn--secondary btn--sm js-copy-key">コピー</button>
-        <button type="button" class="btn btn--danger btn--sm js-regenerate-key">再発行</button>
+    <div class="manage-card__section">
+      <div class="field">
+        <label>視聴リンク <span class="help-text">視聴する人に共有できます</span></label>
+        <div class="copy-row"><div class="stream-key js-watch-url"></div><button type="button" class="btn btn--secondary btn--sm js-copy-watch">コピー</button><a class="btn btn--secondary btn--sm js-watch-link">視聴ページ ↗</a></div>
       </div>
     </div>
 
-    <details style="margin:16px 0">
-      <summary style="cursor:pointer; font-weight:600">OBSの設定方法</summary>
-      <div class="kv-list" style="margin-top:10px">
-        <dt>サービス</dt><dd>WHIP (カスタム)</dd>
-        <dt>サーバ</dt><dd><code class="inline js-whip-url"></code></dd>
-        <dt>Bearer Token</dt><dd>空欄でよい(接続できない場合は上のStream Keyを入力)</dd>
-        <dt>映像エンコーダ</dt><dd>H.264 (x264 / NVENC / QuickSync)</dd>
-        <dt>音声エンコーダ</dt><dd>Opus</dd>
+    <details class="details-panel">
+      <summary>OBSの接続設定</summary>
+      <div class="details-panel__body">
+        <p class="help-text mt-0">OBSの「設定 → 配信」でサービスに「WHIP (カスタム)」を選択し、下記のサーバURLを入力してください。</p>
+        <dl class="kv-list">
+          <dt>サーバURL</dt><dd><code class="stream-key js-whip-url"></code><button type="button" class="btn btn--secondary btn--sm js-copy-whip" style="margin-top:8px">サーバURLをコピー</button></dd>
+          <dt>Bearer Token</dt><dd>通常は空欄です。接続できない場合は下の配信キーを入力してください。</dd>
+          <dt>映像 / 音声</dt><dd>H.264 / Opus</dd>
+        </dl>
+        <div class="field">
+          <label>配信キー <span class="help-text">接続専用の秘密情報です</span></label>
+          <code class="stream-key js-key">••••••••••••••••••••••••••••••••</code>
+          <div class="btn-row" style="margin-top:10px">
+            <button type="button" class="btn btn--secondary btn--sm js-toggle-key">表示</button>
+            <button type="button" class="btn btn--secondary btn--sm js-copy-key">コピー</button>
+            <button type="button" class="btn btn--danger btn--sm js-regenerate-key">キーを再発行</button>
+          </div>
+        </div>
+        <p class="help-text">OBS 30以降に対応しています。サーバURLと配信キーは他の人に共有しないでください。</p>
       </div>
-      <p class="help-text">OBS 30以降が必要です。「設定 → 配信 → サービス」で上記を入力してください。</p>
     </details>
 
-    <form class="js-edit-form">
-      <div class="field">
-        <label>タイトル</label>
-        <input type="text" class="js-title-input" required maxlength="200" />
-      </div>
-      <div class="field">
-        <label>説明</label>
-        <textarea class="js-desc-input" maxlength="2000"></textarea>
-      </div>
-      <div class="field checkbox-row">
-        <input type="checkbox" class="js-public-input" id="pub-CHECKBOX_ID" />
-        <label for="pub-CHECKBOX_ID" style="margin:0">ログインなしでも視聴可能にする(公開)</label>
-      </div>
-      <div class="btn-row">
-        <button type="submit" class="btn btn--sm">保存</button>
-        <button type="button" class="btn btn--danger btn--sm js-stop-btn">配信を強制停止</button>
-        <button type="button" class="btn btn--danger btn--sm js-delete-btn">配信を削除</button>
-      </div>
-    </form>
-  </div>
+    <details class="details-panel">
+      <summary>タイトル・説明・公開設定を編集</summary>
+      <form class="js-edit-form details-panel__body">
+        <div class="field"><label for="title-INPUT_ID">タイトル</label><input type="text" id="title-INPUT_ID" class="js-title-input" required maxlength="200" /></div>
+        <div class="field"><label for="desc-INPUT_ID">説明</label><textarea id="desc-INPUT_ID" class="js-desc-input" maxlength="2000"></textarea></div>
+        <div class="field checkbox-row"><input type="checkbox" class="js-public-input" id="pub-CHECKBOX_ID" /><label for="pub-CHECKBOX_ID" style="margin:0">ログインなしでも視聴できる公開配信にする</label></div>
+        <button type="submit" class="btn btn--sm">変更を保存</button>
+      </form>
+    </details>
+    <div class="manage-card__actions">
+      <span class="help-text mt-0">配信の操作</span>
+      <button type="button" class="btn btn--danger btn--sm js-stop-btn">配信を強制停止</button>
+      <button type="button" class="btn btn--danger btn--sm js-delete-btn">配信を削除</button>
+    </div>
+  </article>
 </template>
 
 <script src="/js/common.js"></script>

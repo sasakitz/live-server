@@ -8,197 +8,41 @@
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="header">
-  <a href="/" class="header__brand">🖥️ μTube</a>
-  <nav class="header__nav" id="nav-links"></nav>
+  <a href="/" class="header__brand"><span class="brand-mark" aria-hidden="true">▶</span>μTube</a>
+  <nav class="header__nav" id="nav-links" aria-label="メインナビゲーション"></nav>
 </header>
 
+<main id="main-content">
+<div class="player-shell">
 <div class="player-wrap" id="player-wrap">
   <video id="video" autoplay playsinline muted></video>
-  <div class="player-overlay" id="overlay">読み込み中...</div>
+  <div class="player-overlay" id="overlay" role="status">読み込み中...</div>
   <div class="player-controls">
+    <button id="play-btn" class="btn btn--secondary btn--sm" type="button" hidden>再生する</button>
     <button id="mute-btn" class="btn btn--secondary btn--sm" type="button" hidden></button>
-    <input type="range" id="volume-slider" class="volume-slider" min="0" max="100" value="100" hidden />
+    <input type="range" id="volume-slider" class="volume-slider" aria-label="音量" min="0" max="100" value="100" hidden />
     <span class="flex-spacer"></span>
     <span id="viewer-count" class="text-muted"></span>
-    <button id="fullscreen-btn" class="btn btn--secondary btn--sm" type="button" hidden>⛶</button>
+    <button id="fullscreen-btn" class="btn btn--secondary btn--sm" type="button" aria-label="全画面表示を切り替える" hidden>⛶</button>
   </div>
 </div>
 
-<main class="container container--narrow" style="max-width:900px">
+</div>
+<section class="container watch-meta">
+  <a href="/" class="help-text">← ライブ一覧へ戻る</a>
   <div class="section-title">
-    <h2 id="title">-</h2>
+    <h1 id="title">ライブを読み込み中</h1>
     <span id="live-badge"></span>
   </div>
   <p id="description" class="text-muted"></p>
   <p id="elapsed" class="help-text"></p>
+</section>
 </main>
 
 <script src="/js/common.js"></script>
 <script src="/js/whep.js"></script>
-<script>
-const streamId = decodeURIComponent(window.location.pathname.replace(/^\/watch\//, ''));
-let session = null;
-let startedAt = null;
-let elapsedTimer = null;
-
-function setOverlay(text) {
-  const overlay = document.getElementById('overlay');
-  overlay.textContent = text;
-  overlay.hidden = !text;
-}
-
-function renderMeta(meta) {
-  document.title = `${meta.title} | μTube`;
-  document.getElementById('title').textContent = meta.title;
-  document.getElementById('description').textContent = meta.description || '';
-  document.getElementById('viewer-count').textContent = meta.is_live ? `👁 ${meta.viewer_count}人視聴中` : '';
-  document.getElementById('live-badge').innerHTML = meta.is_live
-    ? '<span class="badge badge--live"><span class="badge__dot"></span>LIVE</span>'
-    : '<span class="badge badge--offline">オフライン</span>';
-
-  startedAt = meta.started_at;
-  clearInterval(elapsedTimer);
-  if (startedAt) {
-    const tick = () => { document.getElementById('elapsed').textContent = formatRelativeStart(startedAt); };
-    tick();
-    elapsedTimer = setInterval(tick, 1000);
-  } else {
-    document.getElementById('elapsed').textContent = '';
-  }
-}
-
-async function startPlayback() {
-  const video = document.getElementById('video');
-  try {
-    session = await startWhep(streamId, video, (state) => {
-      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-        setOverlay('接続が切れました。再読み込みしてください。');
-      }
-    });
-    setOverlay('');
-    video.play().catch(() => {
-      // 自動再生ブロック時はユーザ操作を待つ(ミュート状態なので通常はブロックされない)。
-    });
-  } catch (e) {
-    setOverlay(`視聴を開始できませんでした: ${e.message}`);
-  }
-}
-
-async function load() {
-  let meta;
-  try {
-    meta = await api(`/api/streams/${encodeURIComponent(streamId)}`);
-  } catch (e) {
-    setOverlay(e.message.includes('401') || /ログイン/.test(e.message)
-      ? '視聴にはログインが必要です'
-      : '配信が見つかりません');
-    return;
-  }
-  renderMeta(meta);
-  if (meta.is_live) {
-    await startPlayback();
-  } else {
-    setOverlay('配信は行われていません');
-  }
-}
-
-const muteBtn = document.getElementById('mute-btn');
-const volumeSlider = document.getElementById('volume-slider');
-
-function updateMuteBtn() {
-  const video = document.getElementById('video');
-  muteBtn.textContent = video.muted || video.volume === 0 ? '🔇' : '🔊';
-}
-
-muteBtn.addEventListener('click', () => {
-  const video = document.getElementById('video');
-  video.muted = !video.muted;
-  if (!video.muted && video.volume === 0) {
-    video.volume = 1;
-    volumeSlider.value = 100;
-  }
-  updateMuteBtn();
-});
-
-volumeSlider.addEventListener('input', () => {
-  const video = document.getElementById('video');
-  video.volume = Number(volumeSlider.value) / 100;
-  video.muted = video.volume === 0;
-  updateMuteBtn();
-});
-
-document.getElementById('video').addEventListener('loadedmetadata', () => {
-  const video = document.getElementById('video');
-  muteBtn.hidden = false;
-  volumeSlider.hidden = false;
-  volumeSlider.value = Math.round(video.volume * 100);
-  updateMuteBtn();
-  fullscreenBtn.hidden = !(document.fullscreenEnabled || video.webkitEnterFullscreen);
-});
-
-const fullscreenBtn = document.getElementById('fullscreen-btn');
-fullscreenBtn.addEventListener('click', () => {
-  const video = document.getElementById('video');
-  // iOS Safari(iPhone)はvideo以外の要素のFullscreen APIに対応していないため、
-  // video自身のネイティブ全画面再生(webkitEnterFullscreen)にフォールバックする。
-  if (video.webkitEnterFullscreen && !document.fullscreenEnabled) {
-    video.webkitEnterFullscreen();
-    return;
-  }
-  const wrap = document.getElementById('player-wrap');
-  if (!document.fullscreenElement) {
-    wrap.requestFullscreen().catch(() => {});
-  } else {
-    document.exitFullscreen().catch(() => {});
-  }
-});
-
-// コントロールバー(音量/ミュート/全画面)は3秒間無操作だと隠す。
-const playerWrap = document.getElementById('player-wrap');
-const playerControls = document.querySelector('.player-controls');
-let hideControlsTimer = null;
-
-function showControls() {
-  playerControls.classList.remove('is-hidden');
-  scheduleHideControls();
-}
-
-function scheduleHideControls() {
-  clearTimeout(hideControlsTimer);
-  hideControlsTimer = setTimeout(() => playerControls.classList.add('is-hidden'), 3000);
-}
-
-['mousemove', 'mouseenter', 'touchstart', 'click', 'keydown'].forEach((evt) => {
-  playerWrap.addEventListener(evt, showControls);
-});
-// コントロールバー上にいる間(スライダー操作中など)は隠さない。
-playerControls.addEventListener('mouseenter', () => clearTimeout(hideControlsTimer));
-playerControls.addEventListener('mouseleave', scheduleHideControls);
-showControls();
-
-window.addEventListener('pagehide', () => {
-  if (session) session.stop();
-});
-
-connectEvents((event) => {
-  if (event.stream_id !== streamId) return;
-  if (event.type === 'stream_online') {
-    load();
-  } else if (event.type === 'stream_offline') {
-    if (session) session.stop();
-    session = null;
-    setOverlay('配信は終了しました');
-    document.getElementById('viewer-count').textContent = '';
-    document.getElementById('live-badge').innerHTML = '<span class="badge badge--offline">オフライン</span>';
-    clearInterval(elapsedTimer);
-    document.getElementById('elapsed').textContent = '';
-  } else if (event.type === 'viewer_count') {
-    document.getElementById('viewer-count').textContent = `👁 ${event.count}人視聴中`;
-  }
-});
-
-load();
-</script>
+<script src="/js/watch.js"></script>
 </body>
 </html>

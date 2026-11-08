@@ -6,12 +6,25 @@ let webhooks = [];
 
 // ---------- タブ切り替え ----------
 function setupTabs() {
-  document.querySelectorAll('.tab').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((b) => b.classList.remove('is-active'));
-      document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('is-active'));
-      btn.classList.add('is-active');
-      document.getElementById(`tab-${btn.dataset.tab}`).classList.add('is-active');
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  const activate = (selected) => {
+    tabs.forEach((tab) => {
+      const active = tab === selected;
+      tab.classList.toggle('is-active', active);
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+      document.getElementById(`tab-${tab.dataset.tab}`).classList.toggle('is-active', active);
+    });
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      let next;
+      if (event.key === 'ArrowRight') next = tabs[(index + 1) % tabs.length];
+      else if (event.key === 'ArrowLeft') next = tabs[(index + tabs.length - 1) % tabs.length];
+      else if (event.key === 'Home') next = tabs[0];
+      else if (event.key === 'End') next = tabs[tabs.length - 1];
+      if (next) { event.preventDefault(); activate(next); next.focus(); }
     });
   });
 }
@@ -27,9 +40,9 @@ async function loadOverview() {
     ['登録配信数', `${stats.total_streams}`],
   ];
   el.innerHTML = items.map(([label, value]) => `
-    <div class="card">
-      <p class="text-muted" style="margin:0 0 6px">${label}</p>
-      <p style="margin:0; font-size:1.6rem; font-weight:700">${value}</p>
+    <div class="card stat-card">
+      <p class="stat-card__label">${label}</p>
+      <p class="stat-card__value">${value}</p>
     </div>
   `).join('');
 }
@@ -37,10 +50,14 @@ async function loadOverview() {
 // ---------- ユーザ管理 ----------
 function renderUsers() {
   const tbody = document.getElementById('users-tbody');
+  if (users.length === 0) {
+    tbody.innerHTML = '<tr><td class="table-empty" colspan="5">ユーザはまだ登録されていません。</td></tr>';
+    return;
+  }
   tbody.innerHTML = users.map((u) => `
     <tr>
       <td>${escapeHtml(u.username)}</td>
-      <td>${escapeHtml(u.role)}</td>
+      <td>${u.role === 'admin' ? '管理者' : '配信者'}</td>
       <td>${u.disabled ? '<span class="badge badge--offline">無効</span>' : '<span class="badge badge--public">有効</span>'}</td>
       <td>${new Date(u.created_at).toLocaleString('ja-JP')}</td>
       <td class="btn-row">
@@ -62,6 +79,7 @@ function openUserForm(user) {
   document.getElementById('user-password').required = !user;
   document.getElementById('user-role').value = user ? user.role : 'broadcaster';
   document.getElementById('user-disabled').checked = user ? user.disabled : false;
+  document.getElementById(user ? 'user-password' : 'user-username').focus();
 }
 
 function closeUserForm() {
@@ -73,7 +91,9 @@ async function loadUsers() {
   users = await api('/api/admin/users');
   renderUsers();
   const ownerSelect = document.getElementById('stream-owner');
+  const selectedOwner = ownerSelect.value;
   ownerSelect.innerHTML = users.map((u) => `<option value="${u.id}">${escapeHtml(u.username)}</option>`).join('');
+  if (users.some((user) => String(user.id) === selectedOwner)) ownerSelect.value = selectedOwner;
 }
 
 document.getElementById('user-new-btn').addEventListener('click', () => openUserForm(null));
@@ -123,6 +143,10 @@ document.getElementById('users-tbody').addEventListener('click', async (ev) => {
 // ---------- 配信管理 ----------
 function renderStreams() {
   const tbody = document.getElementById('streams-tbody');
+  if (streams.length === 0) {
+    tbody.innerHTML = '<tr><td class="table-empty" colspan="7">配信はまだ登録されていません。「＋ 新規配信」から作成してください。</td></tr>';
+    return;
+  }
   tbody.innerHTML = streams.map((s) => `
     <tr>
       <td><a href="/watch/${encodeURIComponent(s.id)}">${escapeHtml(s.id)}</a></td>
@@ -151,6 +175,7 @@ function openStreamForm(stream) {
   document.getElementById('stream-desc').value = stream ? stream.description : '';
   document.getElementById('stream-public').checked = stream ? stream.public : false;
   document.getElementById('stream-form').dataset.editingId = stream ? stream.id : '';
+  document.getElementById('stream-title').focus();
 }
 
 function closeStreamForm() {
@@ -227,6 +252,10 @@ document.getElementById('streams-tbody').addEventListener('click', async (ev) =>
 // ---------- Webhook管理 ----------
 function renderWebhooks() {
   const tbody = document.getElementById('webhooks-tbody');
+  if (webhooks.length === 0) {
+    tbody.innerHTML = '<tr><td class="table-empty" colspan="6">通知先は未設定です。DiscordなどのWebhookを登録できます。</td></tr>';
+    return;
+  }
   tbody.innerHTML = webhooks.map((w) => `
     <tr>
       <td>${escapeHtml(w.name)}</td>
@@ -251,6 +280,7 @@ function openWebhookForm(webhook) {
   document.getElementById('webhook-start').checked = webhook ? webhook.notify_start : true;
   document.getElementById('webhook-stop').checked = webhook ? webhook.notify_stop : true;
   document.getElementById('webhook-enabled').checked = webhook ? webhook.enabled : true;
+  document.getElementById('webhook-name').focus();
 }
 
 function closeWebhookForm() {
@@ -322,6 +352,14 @@ document.getElementById('webhooks-tbody').addEventListener('click', async (ev) =
   }
 });
 
+async function refreshAdmin() {
+  const results = await Promise.allSettled([loadOverview(), loadUsers(), loadStreams(), loadWebhooks()]);
+  const failed = results.find((result) => result.status === 'rejected');
+  document.getElementById('admin-error').hidden = !failed;
+  if (failed) document.getElementById('admin-error-message').textContent = `一部の情報を読み込めませんでした。${failed.reason.message}`;
+}
+document.getElementById('admin-retry').addEventListener('click', refreshAdmin);
+
 // ---------- 起動 ----------
 async function guardAdmin() {
   const user = await fetchMe();
@@ -339,12 +377,11 @@ async function guardAdmin() {
 (async () => {
   if (!(await guardAdmin())) return;
   setupTabs();
-  await Promise.all([loadOverview(), loadUsers(), loadStreams(), loadWebhooks()]);
+  await refreshAdmin();
 
   connectEvents((event) => {
-    if (event.type === 'stream_online' || event.type === 'stream_offline') {
-      loadStreams();
-      loadOverview();
+    if (event.type === 'resync' || event.type === 'stream_online' || event.type === 'stream_offline') {
+      refreshAdmin();
     } else if (event.type === 'viewer_count') {
       const s = streams.find((x) => x.id === event.stream_id);
       if (s) {

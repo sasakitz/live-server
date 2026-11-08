@@ -106,3 +106,29 @@ impl SessionStore for SqliteSessionStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn collisions_expiry_save_and_delete_preserve_session_isolation() {
+        let db = crate::db::init_pool("sqlite::memory:").await.unwrap();
+        let store = SqliteSessionStore::new(db);
+        let mut first = Record { id: Id::default(), data: HashMap::new(), expiry_date: OffsetDateTime::now_utc() + time::Duration::hours(1) };
+        first.data.insert("user_id".into(), serde_json::json!(1));
+        store.create(&mut first).await.unwrap();
+        let mut second = first.clone();
+        second.data.insert("user_id".into(), serde_json::json!(2));
+        store.create(&mut second).await.unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(store.load(&first.id).await.unwrap().unwrap().data["user_id"], 1);
+        second.expiry_date = OffsetDateTime::now_utc() - time::Duration::hours(1);
+        store.save(&second).await.unwrap();
+        assert!(store.load(&second.id).await.unwrap().is_none());
+        assert_eq!(store.delete_expired().await.unwrap(), 1);
+        store.delete(&first.id).await.unwrap();
+        assert!(store.load(&first.id).await.unwrap().is_none());
+    }
+}

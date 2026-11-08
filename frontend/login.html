@@ -8,14 +8,22 @@
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
+<a class="skip-link" href="#main-content">本文へ移動</a>
 <header class="header">
-  <a href="/" class="header__brand">🖥️ μTube</a>
-  <nav class="header__nav" id="nav-links"></nav>
+  <a href="/" class="header__brand"><span class="brand-mark" aria-hidden="true">▶</span>μTube</a>
+  <nav class="header__nav" id="nav-links" aria-label="メインナビゲーション"></nav>
 </header>
 
-<main class="container container--narrow">
-  <div class="card" style="margin-top:48px">
-    <h1 style="margin-top:0; font-size:1.25rem">ログイン</h1>
+<main id="main-content" class="container login-layout">
+  <section class="login-intro">
+    <span class="eyebrow">WELCOME TO μTube</span>
+    <h1>あなたのライブを、<br>ここから。</h1>
+    <p>配信の準備も、管理も、ひとつの場所で。<br>ログインして、次のライブをはじめましょう。</p>
+    <a href="/" class="nav-link">← ライブ一覧へ戻る</a>
+  </section>
+  <section class="card login-card" aria-labelledby="login-title">
+    <h2 id="login-title">ログイン</h2>
+    <p class="help-text">ユーザ名とパスワードを入力してください。</p>
     <form id="login-form">
       <div class="field">
         <label for="username">ユーザ名</label>
@@ -25,10 +33,11 @@
         <label for="password">パスワード</label>
         <input type="password" id="password" name="password" autocomplete="current-password" required />
       </div>
-      <button type="submit" class="btn" style="width:100%">ログイン</button>
-      <p id="error" class="error-text" hidden></p>
+      <button id="login-submit" type="submit" class="btn" style="width:100%">ログイン</button>
+      <p id="error" class="error-text" role="alert" hidden></p>
     </form>
-  </div>
+    <p class="login-card__footer text-muted">アカウントについては管理者へお問い合わせください。</p>
+  </section>
 </main>
 
 <script src="/js/common.js"></script>
@@ -36,16 +45,24 @@
 document.getElementById('login-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const errorEl = document.getElementById('error');
+  const submit = document.getElementById('login-submit');
+  if (submit.disabled) return;
+  submit.disabled = true;
+  submit.textContent = 'ログインしています…';
   errorEl.hidden = true;
   const username = document.getElementById('username').value;
   const password = document.getElementById('password').value;
   try {
     await api('/api/login', { method: 'POST', body: { username, password } });
     const params = new URLSearchParams(window.location.search);
-    window.location.href = params.get('next') || '/dashboard';
+    const next = new URL(params.get('next') || '/dashboard', window.location.origin);
+    window.location.href = next.origin === window.location.origin ? next.href : '/dashboard';
   } catch (e) {
     errorEl.textContent = e.message;
     errorEl.hidden = false;
+  } finally {
+    submit.disabled = false;
+    submit.textContent = 'ログイン';
   }
 });
 </script>

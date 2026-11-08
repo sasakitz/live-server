@@ -8,16 +8,15 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
 use axum::Router;
+use uuid::Uuid;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_local::TrackLocalWriter;
 
 use crate::error::{AppError, AppResult};
 use crate::models::Stream;
-use crate::sfu::lifecycle;
+use crate::sfu::{lifecycle, negotiate};
 use crate::sfu::room::Room;
 use crate::sfu::thumbnail::{self, ThumbnailCapturer};
 use crate::state::AppState;
@@ -50,7 +49,7 @@ async fn publish(
     let offer_sdp =
         String::from_utf8(body.to_vec()).map_err(|_| AppError::bad_request("SDPがUTF-8として不正です"))?;
 
-    let stream = sqlx::query_as::<_, Stream>("SELECT * FROM streams WHERE stream_key = ?")
+    let stream = sqlx::query_as::<_, Stream>("SELECT s.* FROM streams s JOIN users u ON u.id = s.owner_user_id WHERE s.stream_key = ? AND u.disabled = 0")
         .bind(&stream_key)
         .fetch_optional(&state.db)
         .await?
@@ -76,7 +75,7 @@ async fn publish(
         };
         if is_stale {
             tracing::info!(stream_id = %stream.id, "未クリーンアップの旧セッションを検出したため破棄して再配信を受け付けます");
-            lifecycle::stop_stream(&state, &stream.id, true).await?;
+            lifecycle::stop_session(&state, &stream.id, existing.session_id).await?;
         } else {
             return Err(AppError::conflict("この配信は既に開始されています"));
         }
@@ -90,14 +89,17 @@ async fn publish(
             .new_peer_connection(RTCConfiguration::default())
             .await?,
     );
+    let mut pending = crate::sfu::NegotiatingPeer::new(pc.clone());
 
     let room = Arc::new(Room::new(stream.id.clone()));
     *room.publisher_pc.write().await = Some(pc.clone());
-    state
-        .rooms
-        .write()
-        .await
-        .insert(stream.id.clone(), room.clone());
+    if let Err(error) = lifecycle::register_room(&state, &stream_key, room.clone()).await {
+        let _ = pc.close().await;
+        return Err(error);
+    }
+    let session_id = room.session_id;
+    pending.publisher = Some((state.clone(), stream.id.clone(), session_id));
+
 
     // OBSから届いたRTPをそのままRoomのローカルトラックへ書き込む(=視聴者へのファンアウト元)。
     // トランスコードは行わない。
@@ -121,8 +123,9 @@ async fn publish(
                     loop {
                         match track.read_rtp().await {
                             Ok((packet, _attributes)) => {
-                                if local_track.write_rtp(&packet).await.is_err() {
-                                    break;
+                                // 1視聴者の送信失敗で、全視聴者への中継を終了させない。
+                                if let Err(error) = local_track.write_rtp(&packet).await {
+                                    tracing::trace!(?error, "RTP送信の一部が失敗しました");
                                 }
                                 if let Some(capturer) = capturer.as_mut() {
                                     if let Some(annexb) = capturer.push(&packet) {
@@ -150,24 +153,15 @@ async fn publish(
             let state = state.clone();
             let stream_id = stream_id.clone();
             Box::pin(async move {
-                match pc_state {
-                    RTCPeerConnectionState::Connected => {
-                        if let Err(e) = lifecycle::mark_stream_started(&state, &stream_id).await {
-                            tracing::error!(error = ?e, stream_id, "配信開始処理に失敗しました");
-                        }
-                    }
-                    RTCPeerConnectionState::Disconnected
-                    | RTCPeerConnectionState::Failed
-                    | RTCPeerConnectionState::Closed => {
-                        // このコールバックはPeerConnection内部でon_peer_connection_state_change_handler
-                        // をロックした状態で呼ばれるため、ここでpc.close()を呼ぶと同じロックの
-                        // 再取得でデッドロックする。PCは既に閉じかけているのでclose_publisher_pc=false。
-                        if let Err(e) = lifecycle::stop_stream(&state, &stream_id, false).await {
-                            tracing::error!(error = ?e, stream_id, "配信終了処理に失敗しました");
-                        }
-                    }
-                    _ => {}
-                }
+                // close()が再びこのハンドラを呼ぶため、処理を別タスクへ渡して直ちに戻る。
+                tokio::spawn(async move {
+                    let result = match pc_state {
+                        RTCPeerConnectionState::Connected => lifecycle::mark_stream_started(&state, &stream_id, session_id).await,
+                        RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => lifecycle::stop_session(&state, &stream_id, session_id).await,
+                        _ => Ok(()),
+                    };
+                    if let Err(error) = result { tracing::error!(?error, stream_id, "配信状態の更新に失敗しました"); }
+                });
             })
         }));
     }
@@ -180,7 +174,7 @@ async fn publish(
     let sdp = match negotiate(&pc, offer_sdp).await {
         Ok(sdp) => sdp,
         Err(e) => {
-            state.rooms.write().await.remove(&stream.id);
+            lifecycle::stop_session(&state, &stream.id, session_id).await?;
             let _ = pc.close().await;
             return Err(e);
         }
@@ -190,39 +184,45 @@ async fn publish(
         (header::CONTENT_TYPE, SDP_MIME.to_string()),
         (
             header::LOCATION,
-            format!("/api/whip/resource/{}", stream.id),
+            format!("/api/whip/resource/{session_id}"),
         ),
     ];
 
+    pending.finish();
     Ok((StatusCode::CREATED, headers, sdp).into_response())
 }
 
-async fn negotiate(pc: &RTCPeerConnection, offer_sdp: String) -> AppResult<String> {
-    let offer = RTCSessionDescription::offer(offer_sdp)?;
-    pc.set_remote_description(offer).await?;
-
-    let answer = pc.create_answer(None).await?;
-    let mut gather_complete = pc.gathering_complete_promise().await;
-    pc.set_local_description(answer).await?;
-    let _ = gather_complete.recv().await;
-
-    let local_desc = pc
-        .local_description()
-        .await
-        .ok_or_else(|| AppError::from(anyhow::anyhow!("local descriptionの取得に失敗しました")))?;
-    Ok(local_desc.sdp)
-}
-
-/// `DELETE /api/whip/resource/{stream_id}` — OBS側の「配信終了」操作、または異常切断時に呼ばれる。
-/// on_peer_connection_state_changeのコールバック外(通常のリクエストハンドラ)なので
-/// 明示的にPeerConnectionを閉じる(close_publisher_pc=true)。
-async fn terminate(Path(stream_id): Path<String>, State(state): State<AppState>) -> AppResult<StatusCode> {
-    lifecycle::stop_stream(&state, &stream_id, true).await?;
+/// Locationは接続ごとに生成する推測困難なID。古いDELETEで再配信を止めない。
+async fn terminate(Path(session_id): Path<Uuid>, State(state): State<AppState>) -> AppResult<StatusCode> {
+    let stream_id = state.rooms.read().await.values()
+        .find(|room| room.session_id == session_id).map(|room| room.stream_id.clone());
+    if let Some(stream_id) = stream_id {
+        lifecycle::stop_session(&state, &stream_id, session_id).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/{stream_key}", post(publish))
-        .route("/resource/{stream_id}", delete(terminate))
+        .route("/resource/{session_id}", delete(terminate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn old_resource_delete_cannot_stop_reconnected_publisher() {
+        let state = crate::state::test_state().await;
+        let old = Arc::new(Room::new("test".into()));
+        lifecycle::register_room(&state, "secret", old.clone()).await.unwrap();
+        terminate(Path(old.session_id), State(state.clone())).await.unwrap();
+        let new = Arc::new(Room::new("test".into()));
+        lifecycle::register_room(&state, "secret", new.clone()).await.unwrap();
+        terminate(Path(old.session_id), State(state.clone())).await.unwrap();
+        assert_eq!(state.rooms.read().await["test"].session_id, new.session_id);
+        terminate(Path(new.session_id), State(state.clone())).await.unwrap();
+        assert!(state.rooms.read().await.is_empty());
+    }
 }

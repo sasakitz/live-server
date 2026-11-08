@@ -71,12 +71,10 @@ pub struct WebRtcConfig {
     /// アドレスファミリのICE候補にのみ1:1 NATマッピングとして適用される。
     #[serde(deserialize_with = "deserialize_public_ips")]
     pub public_ips: Vec<IpAddr>,
-    /// ICE候補収集の対象を絞り込むためのローカルNICアドレス。
-    /// 空(既定)の場合はpublic_ipsと同じ値を使う(クラウドVM等、public_ipsがNICに
-    /// 直接付いている場合はこれで問題ない)。自宅サーバ等でルータのポート開放/DMZ経由
-    /// のグローバルIPをpublic_ipsに指定している場合、そのIPはNICには存在しないため、
-    /// ここにサーバ機自身のLAN側IP(例: `192.168.1.7`)を明示する必要がある
-    /// (指定しないとICE候補が1つも生成されず配信が確立しない)。
+    /// public_ipsに加えてICE候補を収集するローカルNICアドレス。
+    /// public_ipsがNICに直接付いている場合は指定不要。
+    /// IPv4 NAT配下ではサーバ機のLAN側IPv4を追加する(例: `["192.168.1.7"]`)。
+    /// public_ipsに指定したNIC直結のIPv6は、bind_ipsの指定にかかわらず収集対象になる。
     #[serde(default)]
     pub bind_ips: Vec<IpAddr>,
     /// WebRTCメディア(SRTP/DTLS)に使うUDPポート範囲の下限。ファイアウォールはこの範囲を開放する。
@@ -86,18 +84,15 @@ pub struct WebRtcConfig {
     #[serde(default = "default_udp_port_max")]
     pub udp_port_max: u16,
     /// ブラウザ側のICEに使わせるSTUNサーバ(`/api/client-config`経由で配布)。
-    /// サーバ自体はpublic_ipsで直接到達可能なためSTUN不要であり、サーバ自身の
-    /// RTCConfigurationには渡さないこと。渡すとICE候補収集がip_filter/public_ips
-    /// による制限を経由せずにSTUNサーバへ問い合わせてしまい(webrtc-iceの
-    /// gather_candidates_srflxはip_filterを見ない)、public_ipsでIPv4のみに
-    /// 絞ったつもりでもサーバがIPv6のsrflx候補を広告してしまう不具合を招く。
+    /// サーバ側はpublic_ipsで到達先を明示するため、STUNはブラウザ側にのみ配布する。
+    /// IPv4/IPv6とも、サーバ側の候補はpublic_ipsとbind_ipsに基づいて収集する。
     #[serde(default = "default_stun_servers")]
     pub stun_servers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthConfig {
-    /// trueの場合、未ログインユーザにも公開(public)配信の視聴を許可する。
+    /// trueの場合、配信ごとのpublic設定にかかわらず、未ログインでの全配信の視聴を許可する。
     #[serde(default)]
     pub public_viewing: bool,
     /// 初回起動時に存在しなければ作成する管理者アカウント。

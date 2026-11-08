@@ -47,6 +47,7 @@ function showToast(message) {
     el = document.createElement('div');
     el.id = 'toast';
     el.className = 'toast';
+    el.setAttribute('role', 'status');
     document.body.appendChild(el);
   }
   el.textContent = message;
@@ -82,16 +83,16 @@ async function renderNav() {
   if (!nav) return null;
   const user = await fetchMe();
 
-  const links = [];
+  const currentPath = window.location.pathname;
+  const navLink = (href, label) => `<a href="${href}" class="nav-link"${currentPath === href || (href === '/' && currentPath.startsWith('/watch/')) ? ' aria-current="page"' : ''}>${label}</a>`;
+  const links = [navLink('/', 'ライブ配信')];
   if (user) {
-    links.push(`<span class="text-muted">${escapeHtml(user.username)}</span>`);
-    links.push('<a href="/dashboard" class="btn btn--secondary btn--sm">配信管理</a>');
-    if (user.role === 'admin') {
-      links.push('<a href="/admin" class="btn btn--secondary btn--sm">管理者設定</a>');
-    }
+    links.push(navLink('/dashboard', '配信管理'));
+    if (user.role === 'admin') links.push(navLink('/admin', '管理者設定'));
+    links.push(`<span class="nav-user"><span class="nav-user__avatar" aria-hidden="true">${escapeHtml(Array.from(user.username)[0] || 'U')}</span><span class="nav-user__name">${escapeHtml(user.username)}</span></span>`);
     links.push('<button id="logout-btn" class="btn btn--secondary btn--sm" type="button">ログアウト</button>');
   } else {
-    links.push('<a href="/login" class="btn btn--sm">ログイン</a>');
+    links.push('<a href="/login" class="btn btn--sm"' + (currentPath === '/login' ? ' aria-current="page"' : '') + '>ログイン</a>');
   }
   nav.innerHTML = links.join('');
 
@@ -112,12 +113,19 @@ async function renderNav() {
 function connectEvents(onEvent) {
   let delay = 1000;
   let closedByUser = false;
+  let currentSocket;
+  let reconnectTimer;
+  let connectedOnce = false;
 
   function connect() {
+    if (closedByUser) return;
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/api/ws`);
+    currentSocket = ws;
     ws.addEventListener('open', () => {
       delay = 1000;
+      if (connectedOnce) onEvent({ type: 'resync' });
+      connectedOnce = true;
     });
     ws.addEventListener('message', (ev) => {
       try {
@@ -128,17 +136,18 @@ function connectEvents(onEvent) {
     });
     ws.addEventListener('close', () => {
       if (closedByUser) return;
-      setTimeout(connect, delay);
+      reconnectTimer = setTimeout(connect, delay);
       delay = Math.min(delay * 1.6, 10000);
     });
     ws.addEventListener('error', () => ws.close());
     return ws;
   }
 
-  const ws = connect();
+  connect();
   return () => {
     closedByUser = true;
-    ws.close();
+    clearTimeout(reconnectTimer);
+    currentSocket.close();
   };
 }
 
